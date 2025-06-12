@@ -54,6 +54,11 @@ contract CSBondCurveInitTest is Test {
         vm.expectRevert(ICSBondCurve.InvalidInitializationCurveId.selector);
         bondCurve.initialize(_bondCurve);
     }
+
+    function test_getCurveInfo_uninitialized_reverts() public {
+        vm.expectRevert(ICSBondCurve.InvalidBondCurveId.selector);
+        bondCurve.getCurveInfo(0);
+    }
 }
 
 contract CSBondCurveTest is Test {
