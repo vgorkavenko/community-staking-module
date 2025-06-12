@@ -116,7 +116,7 @@ abstract contract CSBondCurve is ICSBondCurve, Initializable {
         BondCurveIntervalInput[] calldata intervals
     ) internal {
         CSBondCurveStorage storage $ = _getCSBondCurveStorage();
-        if (curveId > $.bondCurves.length - 1) {
+        if (curveId >= $.bondCurves.length) {
             revert InvalidBondCurveId();
         }
 
@@ -134,7 +134,7 @@ abstract contract CSBondCurve is ICSBondCurve, Initializable {
     function _setBondCurve(uint256 nodeOperatorId, uint256 curveId) internal {
         CSBondCurveStorage storage $ = _getCSBondCurveStorage();
         unchecked {
-            if (curveId > $.bondCurves.length - 1) {
+            if (curveId >= $.bondCurves.length) {
                 revert InvalidBondCurveId();
             }
         }
@@ -249,7 +249,7 @@ abstract contract CSBondCurve is ICSBondCurve, Initializable {
         uint256 curveId
     ) private view returns (BondCurve storage) {
         CSBondCurveStorage storage $ = _getCSBondCurveStorage();
-        if (curveId > $.bondCurves.length - 1) {
+        if (curveId >= $.bondCurves.length) {
             revert InvalidBondCurveId();
         }
 
