@@ -10,6 +10,8 @@ import { Utilities } from "./helpers/Utilities.sol";
 import { ERC1155Holder } from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import { ERC20Testable, ERC721Testable, ERC1155Testable } from "./helpers/ERCTestable.sol";
 import { LidoLocatorMock } from "./helpers/mocks/LidoLocatorMock.sol";
+import { ILido } from "../src/interfaces/ILido.sol";
+import { StETHMock } from "./helpers/mocks/StETHMock.sol";
 
 contract AssetRecovererTestable is AssetRecoverer, ERC1155Holder {
     address public recoverer;
@@ -31,6 +33,22 @@ contract EtherRefuser {
 
     receive() external payable {
         revert RefuseEther();
+    }
+}
+
+contract AssetRecovererStETHTestable is AssetRecovererTestable {
+    ILido public LIDO;
+
+    constructor(address _recoverer, address _lido)
+        AssetRecovererTestable(_recoverer)
+    {
+        LIDO = ILido(_lido);
+    }
+
+    function recoverStETHShares() external {
+        _onlyRecoverer();
+        uint256 shares = LIDO.sharesOf(address(this));
+        AssetRecovererLib.recoverStETHShares(address(LIDO), shares);
     }
 }
 
@@ -136,5 +154,23 @@ contract AssetRecovererTest is Test, Utilities {
         vm.prank(stranger);
         vm.expectRevert(AssetRecovererTestable.OnlyRecoverer.selector);
         recoverer.recoverERC1155(address(token), 0);
+    }
+
+    function test_recoverStETHShares() public {
+        StETHMock stETH = new StETHMock(10 ether);
+        AssetRecovererStETHTestable r = new AssetRecovererStETHTestable(
+            actor,
+            address(stETH)
+        );
+        uint256 sharesToRecover = 5 ether;
+        stETH.mintShares(address(r), sharesToRecover);
+
+        vm.prank(actor);
+        vm.expectEmit(address(r));
+        emit IAssetRecovererLib.StETHSharesRecovered(actor, sharesToRecover);
+        r.recoverStETHShares();
+
+        assertEq(stETH.sharesOf(address(r)), 0);
+        assertEq(stETH.sharesOf(actor), sharesToRecover);
     }
 }
