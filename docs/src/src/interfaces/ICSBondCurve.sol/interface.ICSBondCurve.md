@@ -176,12 +176,14 @@ event BondCurveSet(uint256 indexed nodeOperatorId, uint256 curveId);
 ```solidity
 error InvalidBondCurveLength();
 ```
+Occurs when the provided curve contains fewer intervals than `MIN_CURVE_LENGTH`.
 
 ### InvalidBondCurveMaxLength
 
 ```solidity
 error InvalidBondCurveMaxLength();
 ```
+Occurs when the provided curve contains more intervals than `MAX_CURVE_LENGTH`.
 
 ### InvalidBondCurveValues
 

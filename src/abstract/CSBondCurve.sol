@@ -259,11 +259,11 @@ abstract contract CSBondCurve is ICSBondCurve, Initializable {
     function _checkBondCurve(
         BondCurveIntervalInput[] calldata intervals
     ) private pure {
-        if (
-            intervals.length < MIN_CURVE_LENGTH ||
-            intervals.length > MAX_CURVE_LENGTH
-        ) {
+        if (intervals.length < MIN_CURVE_LENGTH) {
             revert InvalidBondCurveLength();
+        }
+        if (intervals.length > MAX_CURVE_LENGTH) {
+            revert InvalidBondCurveMaxLength();
         }
 
         if (intervals[0].minKeysCount != 1) {
