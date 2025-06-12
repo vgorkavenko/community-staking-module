@@ -589,7 +589,7 @@ operator in this module has actually received any updated counts as a result of 
 but given that the total number of exited validators returned from getStakingModuleSummary
 is the same as StakingRouter expects based on the total count received from the oracle.
 
-*This method is not used in CSM, hence it is do nothing*
+*This method is not used in CSM, hence it does nothing*
 
 *NOTE: No role checks because of empty body to save bytecode.*
 
