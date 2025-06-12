@@ -43,7 +43,7 @@ function recoverStETHShares(address lido, uint256 shares) external;
 |Name|Type|Description|
 |----|----|-----------|
 |`lido`|`address`|The address of the Lido contract.|
-|`shares`|`uint256`|The amount of stETH shares to recover. Emits an StETHRecovered event upon success.|
+|`shares`|`uint256`|The amount of stETH shares to recover. Emits a `StETHSharesRecovered` event upon success.|
 
 
 ### recoverERC721
