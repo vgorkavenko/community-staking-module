@@ -6,6 +6,7 @@ import "forge-std/Test.sol";
 import { VettedGate } from "src/VettedGate.sol";
 import { PausableUntil } from "src/lib/utils/PausableUntil.sol";
 import { IVettedGate } from "src/interfaces/IVettedGate.sol";
+import { IMerkleGate } from "src/interfaces/IMerkleGate.sol";
 import { ICSModule, NodeOperatorManagementProperties, NodeOperator } from "src/interfaces/ICSModule.sol";
 import { ICSAccounting } from "src/interfaces/ICSAccounting.sol";
 import { Utilities } from "../helpers/Utilities.sol";
@@ -123,11 +124,12 @@ contract VettedGateTest is VettedGateTestBase {
         _enableInitializers(address(vettedGate));
 
         vm.expectEmit();
-        emit IVettedGate.TreeSet(root, cid);
+        emit IMerkleGate.TreeSet(root, cid);
         vettedGate.initialize(curveId, merkleTree.root(), cid, admin);
 
         assertEq(vettedGate.curveId(), curveId);
         assertEq(vettedGate.treeRoot(), root);
+        assertEq(keccak256(bytes(vettedGate.treeCid())), keccak256(bytes(cid)));
         assertEq(
             vettedGate.getRoleMemberCount(vettedGate.DEFAULT_ADMIN_ROLE()),
             1
@@ -151,7 +153,7 @@ contract VettedGateTest is VettedGateTestBase {
         vettedGate = new VettedGate(csm);
         _enableInitializers(address(vettedGate));
 
-        vm.expectRevert(IVettedGate.InvalidTreeRoot.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeRoot.selector);
         vettedGate.initialize(curveId, bytes32(0), cid, admin);
     }
 
@@ -159,7 +161,7 @@ contract VettedGateTest is VettedGateTestBase {
         vettedGate = new VettedGate(csm);
         _enableInitializers(address(vettedGate));
 
-        vm.expectRevert(IVettedGate.InvalidTreeCid.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeCid.selector);
         vettedGate.initialize(curveId, root, "", admin);
     }
 
@@ -255,7 +257,7 @@ contract VettedGateTest is VettedGateTestBase {
         vettedGate.grantRole(vettedGate.SET_TREE_ROLE(), admin);
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.TreeSet(newRoot, newCid);
+        emit IMerkleGate.TreeSet(newRoot, newCid);
         vettedGate.setTreeParams(newRoot, newCid);
 
         vm.stopPrank();
@@ -275,7 +277,7 @@ contract VettedGateTest is VettedGateTestBase {
         vm.startPrank(admin);
         vettedGate.grantRole(vettedGate.SET_TREE_ROLE(), admin);
 
-        vm.expectRevert(IVettedGate.InvalidTreeRoot.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeRoot.selector);
         vettedGate.setTreeParams(bytes32(0), "newCid");
 
         vm.stopPrank();
@@ -286,7 +288,7 @@ contract VettedGateTest is VettedGateTestBase {
         vettedGate.grantRole(vettedGate.SET_TREE_ROLE(), admin);
         bytes32 currRoot = merkleTree.root();
 
-        vm.expectRevert(IVettedGate.InvalidTreeRoot.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeRoot.selector);
         vettedGate.setTreeParams(currRoot, "newCid");
 
         vm.stopPrank();
@@ -296,7 +298,7 @@ contract VettedGateTest is VettedGateTestBase {
         vm.startPrank(admin);
         vettedGate.grantRole(vettedGate.SET_TREE_ROLE(), admin);
 
-        vm.expectRevert(IVettedGate.InvalidTreeCid.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeCid.selector);
         vettedGate.setTreeParams(bytes32(randomBytes(32)), "");
 
         vm.stopPrank();
@@ -306,7 +308,7 @@ contract VettedGateTest is VettedGateTestBase {
         vm.startPrank(admin);
         vettedGate.grantRole(vettedGate.SET_TREE_ROLE(), admin);
 
-        vm.expectRevert(IVettedGate.InvalidTreeCid.selector);
+        vm.expectRevert(IMerkleGate.InvalidTreeCid.selector);
         vettedGate.setTreeParams(bytes32(randomBytes(32)), cid);
 
         vm.stopPrank();
@@ -327,7 +329,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertFalse(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorETH(
             keysCount,
@@ -354,7 +356,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertFalse(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorStETH(
             keysCount,
@@ -388,7 +390,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertFalse(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorWstETH(
             keysCount,
@@ -432,7 +434,7 @@ contract VettedGateTest is VettedGateTestBase {
             address(0)
         );
 
-        vm.expectRevert(IVettedGate.AlreadyConsumed.selector);
+        vm.expectRevert(IMerkleGate.AlreadyConsumed.selector);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorETH(
             keysCount,
@@ -452,7 +454,7 @@ contract VettedGateTest is VettedGateTestBase {
         uint256 keysCount = 1;
         bytes32[] memory invalidProof = merkleTree.getProof(1);
 
-        vm.expectRevert(IVettedGate.InvalidProof.selector);
+        vm.expectRevert(IMerkleGate.InvalidProof.selector);
         vettedGate.addNodeOperatorETH(
             keysCount,
             randomBytes(48 * keysCount),
@@ -516,7 +518,7 @@ contract VettedGateTest is VettedGateTestBase {
             address(0)
         );
 
-        vm.expectRevert(IVettedGate.AlreadyConsumed.selector);
+        vm.expectRevert(IMerkleGate.AlreadyConsumed.selector);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorStETH(
             keysCount,
@@ -543,7 +545,7 @@ contract VettedGateTest is VettedGateTestBase {
         uint256 keysCount = 1;
         bytes32[] memory invalidProof = merkleTree.getProof(1);
 
-        vm.expectRevert(IVettedGate.InvalidProof.selector);
+        vm.expectRevert(IMerkleGate.InvalidProof.selector);
         vettedGate.addNodeOperatorStETH(
             keysCount,
             randomBytes(48 * keysCount),
@@ -621,7 +623,7 @@ contract VettedGateTest is VettedGateTestBase {
             address(0)
         );
 
-        vm.expectRevert(IVettedGate.AlreadyConsumed.selector);
+        vm.expectRevert(IMerkleGate.AlreadyConsumed.selector);
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorStETH(
             keysCount,
@@ -648,7 +650,7 @@ contract VettedGateTest is VettedGateTestBase {
         uint256 keysCount = 1;
         bytes32[] memory invalidProof = merkleTree.getProof(1);
 
-        vm.expectRevert(IVettedGate.InvalidProof.selector);
+        vm.expectRevert(IMerkleGate.InvalidProof.selector);
         vettedGate.addNodeOperatorWstETH(
             keysCount,
             randomBytes(48 * keysCount),
@@ -718,7 +720,7 @@ contract VettedGateTest is VettedGateTestBase {
             )
         );
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.prank(nodeOperator);
         vettedGate.claimBondCurve(0, proof);
     }
@@ -769,7 +771,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertTrue(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.expectEmit(address(vettedGate));
         emit IVettedGate.ReferralRecorded(stranger, season, 0);
         vm.prank(nodeOperator);
@@ -805,7 +807,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertTrue(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.recordLogs();
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorETH(
@@ -842,7 +844,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertTrue(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.recordLogs();
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorETH(
@@ -872,7 +874,7 @@ contract VettedGateTest is VettedGateTestBase {
         assertFalse(vettedGate.isReferralProgramSeasonActive());
 
         vm.expectEmit(address(vettedGate));
-        emit IVettedGate.Consumed(nodeOperator);
+        emit IMerkleGate.Consumed(nodeOperator);
         vm.recordLogs();
         vm.prank(nodeOperator);
         vettedGate.addNodeOperatorETH(
@@ -1231,7 +1233,7 @@ contract VettedGateReferralProgramTest is VettedGateTestBase {
         vm.prank(stranger);
         vettedGate.claimReferrerBondCurve(0, proof);
 
-        vm.expectRevert(IVettedGate.AlreadyConsumed.selector);
+        vm.expectRevert(IMerkleGate.AlreadyConsumed.selector);
         vm.prank(stranger);
         vettedGate.claimReferrerBondCurve(0, proof);
     }
@@ -1246,7 +1248,7 @@ contract VettedGateReferralProgramTest is VettedGateTestBase {
 
         _addReferrals();
 
-        vm.expectRevert(IVettedGate.InvalidProof.selector);
+        vm.expectRevert(IMerkleGate.InvalidProof.selector);
         vm.prank(stranger);
         vettedGate.claimReferrerBondCurve(0, proof);
     }

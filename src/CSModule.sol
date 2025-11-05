@@ -17,6 +17,7 @@ import { ICSAccounting } from "./interfaces/ICSAccounting.sol";
 import { ICSExitPenalties } from "./interfaces/ICSExitPenalties.sol";
 import { ICSModule, NodeOperator, NodeOperatorManagementProperties, ValidatorWithdrawalInfo } from "./interfaces/ICSModule.sol";
 import { ExitPenaltyInfo } from "./interfaces/ICSExitPenalties.sol";
+import { INodeOperatorOwner } from "./interfaces/INodeOperatorOwner.sol";
 
 import { PausableUntil } from "./lib/utils/PausableUntil.sol";
 import { QueueLib, Batch } from "./lib/QueueLib.sol";
@@ -1341,6 +1342,14 @@ contract CSModule is
     /// @dev This function is used to get the accounting contract from immutables to save bytecode and for backwards compatibility
     function accounting() public view returns (ICSAccounting) {
         return ACCOUNTING;
+    }
+
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view override(AccessControlEnumerableUpgradeable) returns (bool) {
+        return
+            interfaceId == type(INodeOperatorOwner).interfaceId ||
+            super.supportsInterface(interfaceId);
     }
 
     function _incrementModuleNonce() internal {
