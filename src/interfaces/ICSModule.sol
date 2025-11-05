@@ -3,16 +3,17 @@
 
 pragma solidity 0.8.24;
 
-import { IStakingModule } from "./IStakingModule.sol";
-import { ICSAccounting } from "./ICSAccounting.sol";
-import { IQueueLib } from "../lib/QueueLib.sol";
-import { INOAddresses } from "../lib/NOAddresses.sol";
-import { IAssetRecovererLib } from "../lib/AssetRecovererLib.sol";
 import { Batch } from "../lib/QueueLib.sol";
-import { ILidoLocator } from "./ILidoLocator.sol";
-import { IStETH } from "./IStETH.sol";
-import { ICSParametersRegistry } from "./ICSParametersRegistry.sol";
+import { IAssetRecovererLib } from "../lib/AssetRecovererLib.sol";
+import { ICSAccounting } from "./ICSAccounting.sol";
 import { ICSExitPenalties } from "./ICSExitPenalties.sol";
+import { ICSParametersRegistry } from "./ICSParametersRegistry.sol";
+import { ILidoLocator } from "./ILidoLocator.sol";
+import { INOAddresses } from "../lib/NOAddresses.sol";
+import { IQueueLib } from "../lib/QueueLib.sol";
+import { IStETH } from "./IStETH.sol";
+import { IStakingModule } from "./IStakingModule.sol";
+import { INodeOperatorOwner } from "./INodeOperatorOwner.sol";
 
 struct NodeOperator {
     // All the counters below are used together e.g. in the _updateDepositableValidatorsCount
@@ -31,7 +32,7 @@ struct NodeOperator {
     /* 4 */ address rewardAddress;
     /* 5 */ address proposedRewardAddress;
     /* 5 */ bool extendedManagerPermissions;
-    /* 5 */ bool usedPriorityQueue;
+    /* 5 */ bool usedPriorityQueue; // @dev no longer used, left for the storage layout compatibility
 }
 
 struct NodeOperatorManagementProperties {
@@ -41,9 +42,15 @@ struct NodeOperatorManagementProperties {
 }
 
 struct ValidatorWithdrawalInfo {
-    uint256 nodeOperatorId; // @dev ID of the Node Operator
-    uint256 keyIndex; // @dev Index of the withdrawn key in the Node Operator's keys storage
-    uint256 amount; // @dev Amount of withdrawn ETH in wei
+    uint256 nodeOperatorId;
+    // Index of the withdrawn key in the Node Operator's keys storage.
+    uint256 keyIndex;
+    // Balance to be used to calculate penalties. For a regular withdrawal of a validator it's the withdrawal amount.
+    // For a slashed validator it's its balance before slashing. The balance will be used to scale incurred penalties.
+    uint256 exitBalance;
+    // Amount of ETH/stETH to penalize Node Operator due to slashing. If the value is non-zero, it means the validator
+    // was slashed.
+    uint256 slashingPenalty;
 }
 
 /// @title Lido's Community Staking Module interface
@@ -51,7 +58,8 @@ interface ICSModule is
     IQueueLib,
     INOAddresses,
     IAssetRecovererLib,
-    IStakingModule
+    IStakingModule,
+    INodeOperatorOwner
 {
     error CannotAddKeys();
     error NodeOperatorDoesNotExist();
@@ -59,6 +67,9 @@ interface ICSModule is
     error InvalidVetKeysPointer();
     error ExitedKeysHigherThanTotalDeposited();
     error ExitedKeysDecrease();
+    error ZeroExitBalance();
+    error SlashingPenaltyIsNotApplicable();
+    error ValidatorSlashingAlreadyReported();
 
     error InvalidInput();
     error NotEnoughKeys();
@@ -78,6 +89,8 @@ interface ICSModule is
     error ZeroAdminAddress();
     error ZeroSenderAddress();
     error ZeroParametersRegistryAddress();
+
+    error DepositQueueHasUnsupportedWithdrawalCredentials();
 
     event NodeOperatorAdded(
         uint256 indexed nodeOperatorId,
@@ -115,7 +128,13 @@ interface ICSModule is
     event WithdrawalSubmitted(
         uint256 indexed nodeOperatorId,
         uint256 keyIndex,
-        uint256 amount,
+        uint256 exitBalance,
+        uint256 slashingPenalty,
+        bytes pubkey
+    );
+    event ValidatorSlashingReported(
+        uint256 indexed nodeOperatorId,
+        uint256 keyIndex,
         bytes pubkey
     );
 
@@ -126,20 +145,6 @@ interface ICSModule is
     );
 
     event KeyRemovalChargeApplied(uint256 indexed nodeOperatorId);
-    event ELRewardsStealingPenaltyReported(
-        uint256 indexed nodeOperatorId,
-        bytes32 proposedBlockHash,
-        uint256 stolenAmount
-    );
-    event ELRewardsStealingPenaltyCancelled(
-        uint256 indexed nodeOperatorId,
-        uint256 amount
-    );
-    event ELRewardsStealingPenaltyCompensated(
-        uint256 indexed nodeOperatorId,
-        uint256 amount
-    );
-    event ELRewardsStealingPenaltySettled(uint256 indexed nodeOperatorId);
 
     function PAUSE_ROLE() external view returns (bytes32);
 
@@ -147,23 +152,27 @@ interface ICSModule is
 
     function STAKING_ROUTER_ROLE() external view returns (bytes32);
 
-    function REPORT_EL_REWARDS_STEALING_PENALTY_ROLE()
+    function REPORT_GENERAL_DELAYED_PENALTY_ROLE()
         external
         view
         returns (bytes32);
 
-    function SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE()
+    function SETTLE_GENERAL_DELAYED_PENALTY_ROLE()
         external
         view
         returns (bytes32);
 
     function VERIFIER_ROLE() external view returns (bytes32);
 
+    function SUBMIT_WITHDRAWALS_ROLE() external view returns (bytes32);
+
     function RECOVERER_ROLE() external view returns (bytes32);
 
     function CREATE_NODE_OPERATOR_ROLE() external view returns (bytes32);
 
-    function DEPOSIT_SIZE() external view returns (uint256);
+    function MIN_ACTIVATION_BALANCE() external view returns (uint256);
+
+    function PENALTY_QUOTIENT() external view returns (uint256);
 
     function LIDO_LOCATOR() external view returns (ILidoLocator);
 
@@ -181,8 +190,6 @@ interface ICSModule is
     function FEE_DISTRIBUTOR() external view returns (address);
 
     function QUEUE_LOWEST_PRIORITY() external view returns (uint256);
-
-    function QUEUE_LEGACY_PRIORITY() external view returns (uint256);
 
     /// @notice Returns the address of the accounting contract
     function accounting() external view returns (ICSAccounting);
@@ -266,38 +273,42 @@ interface ICSModule is
         ICSAccounting.PermitInput memory permit
     ) external;
 
-    /// @notice Report EL rewards stealing for the given Node Operator
-    /// @notice The final locked amount will be equal to the stolen funds plus EL stealing additional fine
+    /// @notice Report general delayed penalty for the given Node Operator
+    /// @notice The final locked amount will be equal to the penalty amount plus additional fine
     /// @param nodeOperatorId ID of the Node Operator
-    /// @param blockHash Execution layer block hash of the proposed block with EL rewards stealing
-    /// @param amount Amount of stolen EL rewards in ETH
-    function reportELRewardsStealingPenalty(
+    /// @param penaltyType Type of the penalty
+    /// @param amount Penalty amount in ETH
+    /// @param details Additional details about the penalty
+    function reportGeneralDelayedPenalty(
         uint256 nodeOperatorId,
-        bytes32 blockHash,
-        uint256 amount
+        bytes32 penaltyType,
+        uint256 amount,
+        string calldata details
     ) external;
 
-    /// @notice Compensate EL rewards stealing penalty for the given Node Operator to prevent further validator exits
+    /// @notice Compensate general delayed penalty for the given Node Operator to prevent further validator exits
     /// @dev Can only be called by the Node Operator manager
     /// @param nodeOperatorId ID of the Node Operator
-    function compensateELRewardsStealingPenalty(
+    function compensateGeneralDelayedPenalty(
         uint256 nodeOperatorId
     ) external payable;
 
-    /// @notice Cancel previously reported and not settled EL rewards stealing penalty for the given Node Operator
+    /// @notice Cancel previously reported and not settled general delayed penalty for the given Node Operator
     /// @notice The funds will be unlocked
     /// @param nodeOperatorId ID of the Node Operator
     /// @param amount Amount of penalty to cancel
-    function cancelELRewardsStealingPenalty(
+    function cancelGeneralDelayedPenalty(
         uint256 nodeOperatorId,
         uint256 amount
     ) external;
 
-    /// @notice Settle locked bond for the given Node Operators
-    /// @dev SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE role is expected to be assigned to Easy Track
+    /// @notice Settles locked bond and sets the target limit to 0 or the given Node Operators
+    /// @dev SETTLE_GENERAL_DELAYED_PENALTY_ROLE role is expected to be assigned to Easy Track
     /// @param nodeOperatorIds IDs of the Node Operators
-    function settleELRewardsStealingPenalty(
-        uint256[] memory nodeOperatorIds
+    /// @param maxAmounts Maximum amounts to settle for each Node Operator
+    function settleGeneralDelayedPenalty(
+        uint256[] memory nodeOperatorIds,
+        uint256[] memory maxAmounts
     ) external;
 
     /// @notice Propose a new manager address for the Node Operator
@@ -378,20 +389,6 @@ interface ICSModule is
     /// @param nodeOperatorId ID of the Node Operator
     function updateDepositableValidatorsCount(uint256 nodeOperatorId) external;
 
-    /// Performs a one-time migration of allocated seats from the legacy or default queue to a priority queue
-    /// for an eligible node operator. This is possible, e.g., in the following scenario: A node
-    /// operator uploaded keys before CSM v2 and have no deposits due to a long queue.
-    /// After the CSM v2 release, the node operator has claimed the ICS or other priority node operator type.
-    /// This node operator type gives the node operator the ability to get several deposits through
-    /// the priority queue. So, by calling the migration method, the node operator can obtain seats
-    /// in the priority queue, even though they already have seats in the legacy queue.
-    /// The method can also be used by the node operators who joined CSM v2 permissionlessly after the release
-    /// and had their node operator type upgraded to ICS or another priority type.
-    /// The method does not remove the old queue items. Hence, the node operator can upload additional keys that
-    /// will take the place of the migrated keys in the original queue.
-    /// @param nodeOperatorId ID of the Node Operator
-    function migrateToPriorityQueue(uint256 nodeOperatorId) external;
-
     /// @notice Get Node Operator info
     /// @param nodeOperatorId ID of the Node Operator
     /// @return Node Operator info
@@ -451,6 +448,15 @@ interface ICSModule is
         uint256 keysCount
     ) external view returns (bytes memory keys, bytes memory signatures);
 
+    /// @notice Report Node Operator's key as slashed.
+    /// @notice Called by `CSVerifier` contract. See `CSVerifier.processSlashedProof`.
+    /// @param nodeOperatorId The ID of the Node Operator
+    /// @param keyIndex The index of the validator key that was slashed
+    function onValidatorSlashed(
+        uint256 nodeOperatorId,
+        uint256 keyIndex
+    ) external;
+
     /// @notice Report Node Operator's keys as withdrawn and settle withdrawn amount
     /// @notice Called by `CSVerifier` contract.
     ///         See `CSVerifier.processWithdrawalProof` to use this method permissionless
@@ -458,6 +464,15 @@ interface ICSModule is
     function submitWithdrawals(
         ValidatorWithdrawalInfo[] calldata withdrawalsInfo
     ) external;
+
+    /// @notice Checks if a validator was reported as slashed
+    /// @param nodeOperatorId The ID of the node operator
+    /// @param keyIndex The index of the validator key
+    /// @return bool True if a validator was reported as slashed
+    function isValidatorSlashed(
+        uint256 nodeOperatorId,
+        uint256 keyIndex
+    ) external view returns (bool);
 
     /// @notice Check if the given Node Operator's key is reported as withdrawn
     /// @param nodeOperatorId ID of the Node Operator

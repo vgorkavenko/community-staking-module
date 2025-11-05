@@ -35,12 +35,22 @@ abstract contract DeployImplementationsBase is DeployBase {
     CSVerifier public verifierV2;
     address public earlyAdoption;
 
+    bytes32 internal constant LEGACY_QUEUE_SLOT = bytes32(uint256(1));
+
+    error LegacyQueueNotEmpty(uint128 head, uint128 tail);
+    error MissingCSModuleAddress();
+
     function _deploy() internal {
         if (chainId != block.chainid) {
             revert ChainIdMismatch({
                 actual: block.chainid,
                 expected: chainId
             });
+        }
+
+        bool skipLegacyQueueCheck = vm.envOr("SKIP_LEGACY_QUEUE_CHECK", false);
+        if (!skipLegacyQueueCheck) {
+            _ensureLegacyQueueDrained();
         }
         artifactDir = vm.envOr("ARTIFACTS_DIR", string("./artifacts/local/"));
 
@@ -58,22 +68,23 @@ abstract contract DeployImplementationsBase is DeployBase {
             parametersRegistry.initialize({
                 admin: deployer,
                 data: ICSParametersRegistry.InitializationData({
-                    keyRemovalCharge: config.defaultKeyRemovalCharge,
-                    elRewardsStealingAdditionalFine: config
-                        .defaultElRewardsStealingAdditionalFine,
-                    keysLimit: config.defaultKeysLimit,
-                    rewardShare: config.defaultRewardShareBP,
-                    performanceLeeway: config.defaultAvgPerfLeewayBP,
-                    strikesLifetime: config.defaultStrikesLifetimeFrames,
-                    strikesThreshold: config.defaultStrikesThreshold,
+                    defaultKeyRemovalCharge: config.defaultKeyRemovalCharge,
+                    defaultGeneralDelayedPenaltyAdditionalFine: config
+                        .defaultGeneralDelayedPenaltyAdditionalFine,
+                    defaultKeysLimit: config.defaultKeysLimit,
+                    defaultRewardShare: config.defaultRewardShareBP,
+                    defaultPerformanceLeeway: config.defaultAvgPerfLeewayBP,
+                    defaultStrikesLifetime: config.defaultStrikesLifetimeFrames,
+                    defaultStrikesThreshold: config.defaultStrikesThreshold,
                     defaultQueuePriority: config.defaultQueuePriority,
                     defaultQueueMaxDeposits: config.defaultQueueMaxDeposits,
-                    badPerformancePenalty: config.defaultBadPerformancePenalty,
-                    attestationsWeight: config.defaultAttestationsWeight,
-                    blocksWeight: config.defaultBlocksWeight,
-                    syncWeight: config.defaultSyncWeight,
+                    defaultBadPerformancePenalty: config
+                        .defaultBadPerformancePenalty,
+                    defaultAttestationsWeight: config.defaultAttestationsWeight,
+                    defaultBlocksWeight: config.defaultBlocksWeight,
+                    defaultSyncWeight: config.defaultSyncWeight,
                     defaultAllowedExitDelay: config.defaultAllowedExitDelay,
-                    defaultExitDelayPenalty: config.defaultExitDelayPenalty,
+                    defaultExitDelayFee: config.defaultExitDelayFee,
                     defaultMaxWithdrawalRequestFee: config
                         .defaultMaxWithdrawalRequestFee
                 })
@@ -82,7 +93,7 @@ abstract contract DeployImplementationsBase is DeployBase {
             CSAccounting accountingImpl = new CSAccounting({
                 lidoLocator: config.lidoLocatorAddress,
                 module: address(csm),
-                _feeDistributor: address(feeDistributor),
+                feeDistributor: address(feeDistributor),
                 minBondLockPeriod: config.minBondLockPeriod,
                 maxBondLockPeriod: config.maxBondLockPeriod
             });
@@ -106,10 +117,10 @@ abstract contract DeployImplementationsBase is DeployBase {
                 identifiedCommunityStakersGateBondCurveId,
                 config.identifiedCommunityStakersGateKeyRemovalCharge
             );
-            parametersRegistry.setElRewardsStealingAdditionalFine(
+            parametersRegistry.setGeneralDelayedPenaltyAdditionalFine(
                 identifiedCommunityStakersGateBondCurveId,
                 config
-                    .identifiedCommunityStakersGateELRewardsStealingAdditionalFine
+                    .identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine
             );
             parametersRegistry.setKeysLimit(
                 identifiedCommunityStakersGateBondCurveId,
@@ -151,9 +162,9 @@ abstract contract DeployImplementationsBase is DeployBase {
                 identifiedCommunityStakersGateBondCurveId,
                 config.identifiedCommunityStakersGateAllowedExitDelay
             );
-            parametersRegistry.setExitDelayPenalty(
+            parametersRegistry.setExitDelayFee(
                 identifiedCommunityStakersGateBondCurveId,
-                config.identifiedCommunityStakersGateExitDelayPenalty
+                config.identifiedCommunityStakersGateExitDelayFee
             );
             parametersRegistry.setMaxWithdrawalRequestFee(
                 identifiedCommunityStakersGateBondCurveId,
@@ -238,7 +249,11 @@ abstract contract DeployImplementationsBase is DeployBase {
                     gIFirstHistoricalSummaryPrev: config.gIFirstHistoricalSummary,
                     gIFirstHistoricalSummaryCurr: config.gIFirstHistoricalSummary,
                     gIFirstBlockRootInSummaryPrev: config.gIFirstBlockRootInSummary,
-                    gIFirstBlockRootInSummaryCurr: config.gIFirstBlockRootInSummary
+                    gIFirstBlockRootInSummaryCurr: config.gIFirstBlockRootInSummary,
+                    gIFirstBalanceNodePrev: config.gIFirstBalanceNode,
+                    gIFirstBalanceNodeCurr: config.gIFirstBalanceNode,
+                    gIFirstPendingConsolidationPrev: config.gIFirstPendingConsolidation,
+                    gIFirstPendingConsolidationCurr: config.gIFirstPendingConsolidation
                 }),
                 firstSupportedSlot: Slot.wrap(uint64(config.verifierFirstSupportedSlot)),
                 pivotSlot: Slot.wrap(uint64(config.verifierFirstSupportedSlot)),
@@ -402,6 +417,21 @@ abstract contract DeployImplementationsBase is DeployBase {
             strikes.DEFAULT_ADMIN_ROLE(),
             config.secondAdminAddress
         );
+    }
+
+    function _ensureLegacyQueueDrained() internal {
+        if (address(csm) == address(0)) {
+            revert MissingCSModuleAddress();
+        }
+
+        // QueueLib.Queue packs head/tail into a single slot. See forge inspect output for slot indexes.
+        bytes32 queuePointers = vm.load(address(csm), LEGACY_QUEUE_SLOT);
+        uint128 head = uint128(uint256(queuePointers));
+        uint128 tail = uint128(uint256(queuePointers) >> 128);
+
+        if (head != tail) {
+            revert LegacyQueueNotEmpty(head, tail);
+        }
     }
 }
 

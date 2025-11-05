@@ -56,6 +56,8 @@ struct DeployParams {
     GIndex gIFirstValidator;
     GIndex gIFirstHistoricalSummary;
     GIndex gIFirstBlockRootInSummary;
+    GIndex gIFirstBalanceNode;
+    GIndex gIFirstPendingConsolidation;
     uint256 verifierFirstSupportedSlot;
     uint256 capellaSlot;
     // Accounting
@@ -70,11 +72,11 @@ struct DeployParams {
     // Module
     uint256 stakingModuleId;
     bytes32 moduleType;
-    address elRewardsStealingReporter;
+    address generalDelayedPenaltyReporter;
     // CSParameters
     uint256 queueLowestPriority;
     uint256 defaultKeyRemovalCharge;
-    uint256 defaultElRewardsStealingAdditionalFine;
+    uint256 defaultGeneralDelayedPenaltyAdditionalFine;
     uint256 defaultKeysLimit;
     uint256 defaultAvgPerfLeewayBP;
     uint256 defaultRewardShareBP;
@@ -87,7 +89,7 @@ struct DeployParams {
     uint256 defaultBlocksWeight;
     uint256 defaultSyncWeight;
     uint256 defaultAllowedExitDelay;
-    uint256 defaultExitDelayPenalty;
+    uint256 defaultExitDelayFee;
     uint256 defaultMaxWithdrawalRequestFee;
     // VettedGate
     address identifiedCommunityStakersGateManager;
@@ -97,7 +99,7 @@ struct DeployParams {
     uint256[2][] identifiedCommunityStakersGateBondCurve;
     // Parameters for Identified Community Staker type
     uint256 identifiedCommunityStakersGateKeyRemovalCharge;
-    uint256 identifiedCommunityStakersGateELRewardsStealingAdditionalFine;
+    uint256 identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine;
     uint256 identifiedCommunityStakersGateKeysLimit;
     uint256[2][] identifiedCommunityStakersGateAvgPerfLeewayData;
     uint256[2][] identifiedCommunityStakersGateRewardShareData;
@@ -110,7 +112,7 @@ struct DeployParams {
     uint256 identifiedCommunityStakersGateBlocksWeight;
     uint256 identifiedCommunityStakersGateSyncWeight;
     uint256 identifiedCommunityStakersGateAllowedExitDelay;
-    uint256 identifiedCommunityStakersGateExitDelayPenalty;
+    uint256 identifiedCommunityStakersGateExitDelayFee;
     uint256 identifiedCommunityStakersGateMaxWithdrawalRequestFee;
     // GateSeal
     address gateSealFactory;
@@ -219,6 +221,7 @@ abstract contract DeployBase is Script {
                 _deployProxy(config.proxyAdmin, address(feeDistributorImpl))
             );
 
+            // prettier-ignore
             verifier = new CSVerifier({
                 withdrawalAddress: locator.withdrawalVault(),
                 module: address(csm),
@@ -229,18 +232,16 @@ abstract contract DeployBase is Script {
                     gIFirstWithdrawalCurr: config.gIFirstWithdrawal,
                     gIFirstValidatorPrev: config.gIFirstValidator,
                     gIFirstValidatorCurr: config.gIFirstValidator,
-                    gIFirstHistoricalSummaryPrev: config
-                        .gIFirstHistoricalSummary,
-                    gIFirstHistoricalSummaryCurr: config
-                        .gIFirstHistoricalSummary,
-                    gIFirstBlockRootInSummaryPrev: config
-                        .gIFirstBlockRootInSummary,
-                    gIFirstBlockRootInSummaryCurr: config
-                        .gIFirstBlockRootInSummary
+                    gIFirstHistoricalSummaryPrev: config.gIFirstHistoricalSummary,
+                    gIFirstHistoricalSummaryCurr: config.gIFirstHistoricalSummary,
+                    gIFirstBlockRootInSummaryPrev: config.gIFirstBlockRootInSummary,
+                    gIFirstBlockRootInSummaryCurr: config.gIFirstBlockRootInSummary,
+                    gIFirstBalanceNodePrev: config.gIFirstBalanceNode,
+                    gIFirstBalanceNodeCurr: config.gIFirstBalanceNode,
+                    gIFirstPendingConsolidationPrev: config.gIFirstPendingConsolidation,
+                    gIFirstPendingConsolidationCurr: config.gIFirstPendingConsolidation
                 }),
-                firstSupportedSlot: Slot.wrap(
-                    uint64(config.verifierFirstSupportedSlot)
-                ),
+                firstSupportedSlot: Slot.wrap(uint64(config.verifierFirstSupportedSlot)),
                 pivotSlot: Slot.wrap(uint64(config.verifierFirstSupportedSlot)),
                 capellaSlot: Slot.wrap(uint64(config.capellaSlot)),
                 admin: deployer
@@ -249,22 +250,23 @@ abstract contract DeployBase is Script {
             parametersRegistry.initialize({
                 admin: deployer,
                 data: ICSParametersRegistry.InitializationData({
-                    keyRemovalCharge: config.defaultKeyRemovalCharge,
-                    elRewardsStealingAdditionalFine: config
-                        .defaultElRewardsStealingAdditionalFine,
-                    keysLimit: config.defaultKeysLimit,
-                    rewardShare: config.defaultRewardShareBP,
-                    performanceLeeway: config.defaultAvgPerfLeewayBP,
-                    strikesLifetime: config.defaultStrikesLifetimeFrames,
-                    strikesThreshold: config.defaultStrikesThreshold,
+                    defaultKeyRemovalCharge: config.defaultKeyRemovalCharge,
+                    defaultGeneralDelayedPenaltyAdditionalFine: config
+                        .defaultGeneralDelayedPenaltyAdditionalFine,
+                    defaultKeysLimit: config.defaultKeysLimit,
+                    defaultRewardShare: config.defaultRewardShareBP,
+                    defaultPerformanceLeeway: config.defaultAvgPerfLeewayBP,
+                    defaultStrikesLifetime: config.defaultStrikesLifetimeFrames,
+                    defaultStrikesThreshold: config.defaultStrikesThreshold,
                     defaultQueuePriority: config.defaultQueuePriority,
                     defaultQueueMaxDeposits: config.defaultQueueMaxDeposits,
-                    badPerformancePenalty: config.defaultBadPerformancePenalty,
-                    attestationsWeight: config.defaultAttestationsWeight,
-                    blocksWeight: config.defaultBlocksWeight,
-                    syncWeight: config.defaultSyncWeight,
+                    defaultBadPerformancePenalty: config
+                        .defaultBadPerformancePenalty,
+                    defaultAttestationsWeight: config.defaultAttestationsWeight,
+                    defaultBlocksWeight: config.defaultBlocksWeight,
+                    defaultSyncWeight: config.defaultSyncWeight,
                     defaultAllowedExitDelay: config.defaultAllowedExitDelay,
-                    defaultExitDelayPenalty: config.defaultExitDelayPenalty,
+                    defaultExitDelayFee: config.defaultExitDelayFee,
                     defaultMaxWithdrawalRequestFee: config
                         .defaultMaxWithdrawalRequestFee
                 })
@@ -273,7 +275,7 @@ abstract contract DeployBase is Script {
             CSAccounting accountingImpl = new CSAccounting({
                 lidoLocator: config.lidoLocatorAddress,
                 module: address(csm),
-                _feeDistributor: address(feeDistributor),
+                feeDistributor: address(feeDistributor),
                 minBondLockPeriod: config.minBondLockPeriod,
                 maxBondLockPeriod: config.maxBondLockPeriod
             });
@@ -409,10 +411,10 @@ abstract contract DeployBase is Script {
                 identifiedCommunityStakersGateBondCurveId,
                 config.identifiedCommunityStakersGateKeyRemovalCharge
             );
-            parametersRegistry.setElRewardsStealingAdditionalFine(
+            parametersRegistry.setGeneralDelayedPenaltyAdditionalFine(
                 identifiedCommunityStakersGateBondCurveId,
                 config
-                    .identifiedCommunityStakersGateELRewardsStealingAdditionalFine
+                    .identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine
             );
             parametersRegistry.setKeysLimit(
                 identifiedCommunityStakersGateBondCurveId,
@@ -454,9 +456,9 @@ abstract contract DeployBase is Script {
                 identifiedCommunityStakersGateBondCurveId,
                 config.identifiedCommunityStakersGateAllowedExitDelay
             );
-            parametersRegistry.setExitDelayPenalty(
+            parametersRegistry.setExitDelayFee(
                 identifiedCommunityStakersGateBondCurveId,
-                config.identifiedCommunityStakersGateExitDelayPenalty
+                config.identifiedCommunityStakersGateExitDelayFee
             );
             parametersRegistry.setMaxWithdrawalRequestFee(
                 identifiedCommunityStakersGateBondCurveId,
@@ -569,15 +571,20 @@ abstract contract DeployBase is Script {
             );
             csm.grantRole(csm.CREATE_NODE_OPERATOR_ROLE(), address(vettedGate));
             csm.grantRole(
-                csm.REPORT_EL_REWARDS_STEALING_PENALTY_ROLE(),
-                config.elRewardsStealingReporter
+                csm.REPORT_GENERAL_DELAYED_PENALTY_ROLE(),
+                config.generalDelayedPenaltyReporter
             );
             csm.grantRole(
-                csm.SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE(),
+                csm.SETTLE_GENERAL_DELAYED_PENALTY_ROLE(),
                 config.easyTrackEVMScriptExecutor
             );
 
             csm.grantRole(csm.VERIFIER_ROLE(), address(verifier));
+            csm.grantRole(csm.SUBMIT_WITHDRAWALS_ROLE(), address(verifier));
+            csm.grantRole(
+                csm.SUBMIT_WITHDRAWALS_ROLE(),
+                config.easyTrackEVMScriptExecutor
+            );
 
             if (config.secondAdminAddress != address(0)) {
                 if (config.secondAdminAddress == deployer) {

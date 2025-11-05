@@ -71,10 +71,6 @@ contract CSModuleDeploymentTest is DeploymentBaseTest {
             csmImpl.QUEUE_LOWEST_PRIORITY(),
             deployParams.queueLowestPriority
         );
-        assertEq(
-            csmImpl.QUEUE_LEGACY_PRIORITY(),
-            deployParams.queueLowestPriority - 1
-        );
         assertEq(address(csmImpl.ACCOUNTING()), address(accounting));
         assertEq(address(csmImpl.EXIT_PENALTIES()), address(exitPenalties));
         assertEq(address(csmImpl.FEE_DISTRIBUTOR()), address(feeDistributor));
@@ -102,32 +98,38 @@ contract CSModuleDeploymentTest is DeploymentBaseTest {
 
         assertTrue(
             csm.hasRole(
-                csm.REPORT_EL_REWARDS_STEALING_PENALTY_ROLE(),
-                address(deployParams.elRewardsStealingReporter)
+                csm.REPORT_GENERAL_DELAYED_PENALTY_ROLE(),
+                address(deployParams.generalDelayedPenaltyReporter)
             )
         );
         assertEq(
-            csm.getRoleMemberCount(
-                csm.REPORT_EL_REWARDS_STEALING_PENALTY_ROLE()
-            ),
+            csm.getRoleMemberCount(csm.REPORT_GENERAL_DELAYED_PENALTY_ROLE()),
             1
         );
 
         assertTrue(
             csm.hasRole(
-                csm.SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE(),
+                csm.SETTLE_GENERAL_DELAYED_PENALTY_ROLE(),
                 address(deployParams.easyTrackEVMScriptExecutor)
             )
         );
         assertEq(
-            csm.getRoleMemberCount(
-                csm.SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE()
-            ),
+            csm.getRoleMemberCount(csm.SETTLE_GENERAL_DELAYED_PENALTY_ROLE()),
             1
         );
 
         assertTrue(csm.hasRole(csm.VERIFIER_ROLE(), address(verifier)));
         assertEq(csm.getRoleMemberCount(csm.VERIFIER_ROLE()), 1);
+        assertTrue(
+            csm.hasRole(csm.SUBMIT_WITHDRAWALS_ROLE(), address(verifier))
+        );
+        assertTrue(
+            csm.hasRole(
+                csm.SUBMIT_WITHDRAWALS_ROLE(),
+                address(deployParams.easyTrackEVMScriptExecutor)
+            )
+        );
+        assertEq(csm.getRoleMemberCount(csm.SUBMIT_WITHDRAWALS_ROLE()), 2);
 
         assertEq(csm.getRoleMemberCount(csm.RECOVERER_ROLE()), 0);
 
@@ -165,81 +167,12 @@ contract CSAccountingDeploymentTest is DeploymentBaseTest {
     }
 
     function test_state_onlyFull() public view {
-        uint256 defaultCurveId = accounting.DEFAULT_BOND_CURVE_ID();
-        assertEq(
-            accounting.getCurveInfo(defaultCurveId).intervals[0].minKeysCount,
-            deployParams.defaultBondCurve[0][0]
-        );
-        assertEq(
-            accounting.getCurveInfo(defaultCurveId).intervals[0].trend,
-            deployParams.defaultBondCurve[0][1]
-        );
-        assertEq(
-            accounting.getCurveInfo(defaultCurveId).intervals[1].minKeysCount,
-            deployParams.defaultBondCurve[1][0]
-        );
-        assertEq(
-            accounting.getCurveInfo(defaultCurveId).intervals[1].trend,
-            deployParams.defaultBondCurve[1][1]
-        );
-
-        uint256 identifiedCommunityStakersGateBondCurveId = vettedGate
-            .curveId();
-        assertEq(
-            accounting
-                .getCurveInfo(identifiedCommunityStakersGateBondCurveId)
-                .intervals[0]
-                .minKeysCount,
-            deployParams.identifiedCommunityStakersGateBondCurve[0][0]
-        );
-        assertEq(
-            accounting
-                .getCurveInfo(identifiedCommunityStakersGateBondCurveId)
-                .intervals[0]
-                .trend,
-            deployParams.identifiedCommunityStakersGateBondCurve[0][1]
-        );
-        assertEq(
-            accounting
-                .getCurveInfo(identifiedCommunityStakersGateBondCurveId)
-                .intervals[1]
-                .minKeysCount,
-            deployParams.identifiedCommunityStakersGateBondCurve[1][0]
-        );
-        assertEq(
-            accounting
-                .getCurveInfo(identifiedCommunityStakersGateBondCurveId)
-                .intervals[1]
-                .trend,
-            deployParams.identifiedCommunityStakersGateBondCurve[1][1]
-        );
-
-        uint256 legacyEaBondCurveId = defaultCurveId + 1;
+        assertEq(accounting.DEFAULT_BOND_CURVE_ID(), 0);
 
         assertEq(
-            accounting
-                .getCurveInfo(legacyEaBondCurveId)
-                .intervals[0]
-                .minKeysCount,
-            deployParams.legacyEaBondCurve[0][0]
+            address(accounting.FEE_DISTRIBUTOR()),
+            address(feeDistributor)
         );
-        assertEq(
-            accounting.getCurveInfo(legacyEaBondCurveId).intervals[0].trend,
-            deployParams.legacyEaBondCurve[0][1]
-        );
-        assertEq(
-            accounting
-                .getCurveInfo(legacyEaBondCurveId)
-                .intervals[1]
-                .minKeysCount,
-            deployParams.legacyEaBondCurve[1][0]
-        );
-        assertEq(
-            accounting.getCurveInfo(legacyEaBondCurveId).intervals[1].trend,
-            deployParams.legacyEaBondCurve[1][1]
-        );
-
-        assertEq(address(accounting.feeDistributor()), address(feeDistributor));
         assertEq(accounting.getBondLockPeriod(), deployParams.bondLockPeriod);
 
         assertEq(
@@ -259,7 +192,7 @@ contract CSAccountingDeploymentTest is DeploymentBaseTest {
             lido.allowance(address(accounting), locator.burner()),
             type(uint256).max
         );
-        assertEq(accounting.getInitializedVersion(), 2);
+        assertEq(accounting.getInitializedVersion(), 3);
     }
 
     function test_state() public view {
@@ -727,10 +660,6 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             parametersRegistryImpl.QUEUE_LOWEST_PRIORITY(),
             deployParams.queueLowestPriority
         );
-        assertEq(
-            parametersRegistryImpl.QUEUE_LEGACY_PRIORITY(),
-            deployParams.queueLowestPriority - 1
-        );
     }
 
     function test_state() public view {
@@ -739,8 +668,8 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.defaultKeyRemovalCharge
         );
         assertEq(
-            parametersRegistry.defaultElRewardsStealingAdditionalFine(),
-            deployParams.defaultElRewardsStealingAdditionalFine
+            parametersRegistry.defaultGeneralDelayedPenaltyAdditionalFine(),
+            deployParams.defaultGeneralDelayedPenaltyAdditionalFine
         );
         assertEq(
             parametersRegistry.defaultKeysLimit(),
@@ -782,8 +711,8 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.defaultAllowedExitDelay
         );
         assertEq(
-            parametersRegistry.defaultExitDelayPenalty(),
-            deployParams.defaultExitDelayPenalty
+            parametersRegistry.defaultExitDelayFee(),
+            deployParams.defaultExitDelayFee
         );
         assertEq(
             parametersRegistry.defaultMaxWithdrawalRequestFee(),
@@ -800,11 +729,11 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.identifiedCommunityStakersGateKeyRemovalCharge
         );
         assertEq(
-            parametersRegistry.getElRewardsStealingAdditionalFine(
+            parametersRegistry.getGeneralDelayedPenaltyAdditionalFine(
                 identifiedCommunityStakersGateCurveId
             ),
             deployParams
-                .identifiedCommunityStakersGateELRewardsStealingAdditionalFine
+                .identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine
         );
         assertEq(
             parametersRegistry.getKeysLimit(
@@ -910,10 +839,10 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.identifiedCommunityStakersGateAllowedExitDelay
         );
         assertEq(
-            parametersRegistry.getExitDelayPenalty(
+            parametersRegistry.getExitDelayFee(
                 identifiedCommunityStakersGateCurveId
             ),
-            deployParams.identifiedCommunityStakersGateExitDelayPenalty
+            deployParams.identifiedCommunityStakersGateExitDelayFee
         );
         assertEq(
             parametersRegistry.getMaxWithdrawalRequestFee(
@@ -928,10 +857,10 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.defaultKeyRemovalCharge
         );
         assertEq(
-            parametersRegistry.getElRewardsStealingAdditionalFine(
+            parametersRegistry.getGeneralDelayedPenaltyAdditionalFine(
                 legacyEaBondCurveId
             ),
-            deployParams.defaultElRewardsStealingAdditionalFine
+            deployParams.defaultGeneralDelayedPenaltyAdditionalFine
         );
         assertEq(
             parametersRegistry.getKeysLimit(legacyEaBondCurveId),
@@ -992,8 +921,8 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
             deployParams.defaultAllowedExitDelay
         );
         assertEq(
-            parametersRegistry.getExitDelayPenalty(legacyEaBondCurveId),
-            deployParams.defaultExitDelayPenalty
+            parametersRegistry.getExitDelayFee(legacyEaBondCurveId),
+            deployParams.defaultExitDelayFee
         );
         assertEq(
             parametersRegistry.getMaxWithdrawalRequestFee(legacyEaBondCurveId),
@@ -1021,23 +950,25 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
         parametersRegistry.initialize({
             admin: deployParams.aragonAgent,
             data: ICSParametersRegistry.InitializationData({
-                keyRemovalCharge: deployParams.defaultKeyRemovalCharge,
-                elRewardsStealingAdditionalFine: deployParams
-                    .defaultElRewardsStealingAdditionalFine,
-                keysLimit: deployParams.defaultKeysLimit,
-                rewardShare: deployParams.defaultRewardShareBP,
-                performanceLeeway: deployParams.defaultAvgPerfLeewayBP,
-                strikesLifetime: deployParams.defaultStrikesLifetimeFrames,
-                strikesThreshold: deployParams.defaultStrikesThreshold,
+                defaultKeyRemovalCharge: deployParams.defaultKeyRemovalCharge,
+                defaultGeneralDelayedPenaltyAdditionalFine: deployParams
+                    .defaultGeneralDelayedPenaltyAdditionalFine,
+                defaultKeysLimit: deployParams.defaultKeysLimit,
+                defaultRewardShare: deployParams.defaultRewardShareBP,
+                defaultPerformanceLeeway: deployParams.defaultAvgPerfLeewayBP,
+                defaultStrikesLifetime: deployParams
+                    .defaultStrikesLifetimeFrames,
+                defaultStrikesThreshold: deployParams.defaultStrikesThreshold,
                 defaultQueuePriority: deployParams.defaultQueuePriority,
                 defaultQueueMaxDeposits: deployParams.defaultQueueMaxDeposits,
-                badPerformancePenalty: deployParams
+                defaultBadPerformancePenalty: deployParams
                     .defaultBadPerformancePenalty,
-                attestationsWeight: deployParams.defaultAttestationsWeight,
-                blocksWeight: deployParams.defaultBlocksWeight,
-                syncWeight: deployParams.defaultSyncWeight,
+                defaultAttestationsWeight: deployParams
+                    .defaultAttestationsWeight,
+                defaultBlocksWeight: deployParams.defaultBlocksWeight,
+                defaultSyncWeight: deployParams.defaultSyncWeight,
                 defaultAllowedExitDelay: deployParams.defaultAllowedExitDelay,
-                defaultExitDelayPenalty: deployParams.defaultExitDelayPenalty,
+                defaultExitDelayFee: deployParams.defaultExitDelayFee,
                 defaultMaxWithdrawalRequestFee: deployParams
                     .defaultMaxWithdrawalRequestFee
             })
@@ -1061,23 +992,25 @@ contract CSParametersRegistryDeploymentTest is DeploymentBaseTest {
         parametersRegistryImpl.initialize({
             admin: deployParams.aragonAgent,
             data: ICSParametersRegistry.InitializationData({
-                keyRemovalCharge: deployParams.defaultKeyRemovalCharge,
-                elRewardsStealingAdditionalFine: deployParams
-                    .defaultElRewardsStealingAdditionalFine,
-                keysLimit: deployParams.defaultKeysLimit,
-                rewardShare: deployParams.defaultRewardShareBP,
-                performanceLeeway: deployParams.defaultAvgPerfLeewayBP,
-                strikesLifetime: deployParams.defaultStrikesLifetimeFrames,
-                strikesThreshold: deployParams.defaultStrikesThreshold,
+                defaultKeyRemovalCharge: deployParams.defaultKeyRemovalCharge,
+                defaultGeneralDelayedPenaltyAdditionalFine: deployParams
+                    .defaultGeneralDelayedPenaltyAdditionalFine,
+                defaultKeysLimit: deployParams.defaultKeysLimit,
+                defaultRewardShare: deployParams.defaultRewardShareBP,
+                defaultPerformanceLeeway: deployParams.defaultAvgPerfLeewayBP,
+                defaultStrikesLifetime: deployParams
+                    .defaultStrikesLifetimeFrames,
+                defaultStrikesThreshold: deployParams.defaultStrikesThreshold,
                 defaultQueuePriority: deployParams.defaultQueuePriority,
                 defaultQueueMaxDeposits: deployParams.defaultQueueMaxDeposits,
-                badPerformancePenalty: deployParams
+                defaultBadPerformancePenalty: deployParams
                     .defaultBadPerformancePenalty,
-                attestationsWeight: deployParams.defaultAttestationsWeight,
-                blocksWeight: deployParams.defaultBlocksWeight,
-                syncWeight: deployParams.defaultSyncWeight,
+                defaultAttestationsWeight: deployParams
+                    .defaultAttestationsWeight,
+                defaultBlocksWeight: deployParams.defaultBlocksWeight,
+                defaultSyncWeight: deployParams.defaultSyncWeight,
                 defaultAllowedExitDelay: deployParams.defaultAllowedExitDelay,
-                defaultExitDelayPenalty: deployParams.defaultExitDelayPenalty,
+                defaultExitDelayFee: deployParams.defaultExitDelayFee,
                 defaultMaxWithdrawalRequestFee: deployParams
                     .defaultMaxWithdrawalRequestFee
             })

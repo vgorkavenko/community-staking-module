@@ -28,5 +28,6 @@ ics-assessment/engagement/.cache/
 !.yarn/sdks
 !.yarn/versions
 
+.local.just
 .wake/
 tags

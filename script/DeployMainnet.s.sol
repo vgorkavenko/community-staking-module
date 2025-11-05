@@ -41,6 +41,8 @@ contract DeployMainnet is DeployBase {
         config.gIFirstValidator = GIndices.FIRST_VALIDATOR_ELECTRA;
         config.gIFirstHistoricalSummary = GIndices.FIRST_HISTORICAL_SUMMARY_ELECTRA; // prettier-ignore
         config.gIFirstBlockRootInSummary = GIndices.FIRST_BLOCK_ROOT_IN_SUMMARY_ELECTRA; // prettier-ignore
+        config.gIFirstBalanceNode = GIndices.FIRST_BALANCE_NODE_ELECTRA;
+        config.gIFirstPendingConsolidation = GIndices.FIRST_PENDING_CONSOLIDATION_ELECTRA; // prettier-ignore
         config.verifierFirstSupportedSlot = 364032 * config.slotsPerEpoch; // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-7600.md#activation
         config.capellaSlot = 194048 * config.slotsPerEpoch; // @see https://github.com/eth-clients/mainnet/blob/main/metadata/config.yaml#L50
 
@@ -66,11 +68,11 @@ contract DeployMainnet is DeployBase {
         );
         config.moduleType = "community-onchain-v1"; // Just a unique type name to be used by the off-chain tooling
         config
-            .elRewardsStealingReporter = 0xC52fC3081123073078698F1EAc2f1Dc7Bd71880f; // CSM Committee MS
+            .generalDelayedPenaltyReporter = 0xC52fC3081123073078698F1EAc2f1Dc7Bd71880f; // CSM Committee MS
 
         // CSParameters
         config.defaultKeyRemovalCharge = 0.02 ether;
-        config.defaultElRewardsStealingAdditionalFine = 0.1 ether;
+        config.defaultGeneralDelayedPenaltyAdditionalFine = 0.1 ether;
         config.defaultKeysLimit = type(uint256).max;
         config.defaultAvgPerfLeewayBP = 300;
         config.defaultRewardShareBP = 5834; // 58.34% of 6% = 3.5% of the total
@@ -84,7 +86,7 @@ contract DeployMainnet is DeployBase {
         config.defaultBlocksWeight = 8; // https://eth2book.info/capella/part2/incentives/rewards/
         config.defaultSyncWeight = 2; // https://eth2book.info/capella/part2/incentives/rewards/
         config.defaultAllowedExitDelay = 4 days;
-        config.defaultExitDelayPenalty = 0.1 ether;
+        config.defaultExitDelayFee = 0.1 ether;
         config.defaultMaxWithdrawalRequestFee = 0.1 ether;
 
         // VettedGate
@@ -102,7 +104,7 @@ contract DeployMainnet is DeployBase {
         // Parameters for Identified Community Staker type
         config.identifiedCommunityStakersGateKeyRemovalCharge = 0.01 ether;
         config
-            .identifiedCommunityStakersGateELRewardsStealingAdditionalFine = 0.05 ether;
+            .identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine = 0.05 ether;
         config.identifiedCommunityStakersGateKeysLimit = type(uint248).max;
         config.identifiedCommunityStakersGateAvgPerfLeewayData.push([1, 500]);
         config.identifiedCommunityStakersGateAvgPerfLeewayData.push([151, 300]);
@@ -118,7 +120,7 @@ contract DeployMainnet is DeployBase {
         config.identifiedCommunityStakersGateBlocksWeight = 4;
         config.identifiedCommunityStakersGateSyncWeight = 2;
         config.identifiedCommunityStakersGateAllowedExitDelay = 5 days;
-        config.identifiedCommunityStakersGateExitDelayPenalty = 0.05 ether;
+        config.identifiedCommunityStakersGateExitDelayFee = 0.05 ether;
         config
             .identifiedCommunityStakersGateMaxWithdrawalRequestFee = 0.1 ether;
 

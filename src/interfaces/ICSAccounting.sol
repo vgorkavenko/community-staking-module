@@ -24,8 +24,17 @@ interface ICSAccounting is
         bytes32 s;
     }
 
+    struct FeeSplit {
+        address recipient;
+        uint256 share; // in basis points
+    }
+
     event BondLockCompensated(uint256 indexed nodeOperatorId, uint256 amount);
     event ChargePenaltyRecipientSet(address chargePenaltyRecipient);
+    event CustomRewardsClaimerSet(
+        uint256 indexed nodeOperatorId,
+        address rewardsClaimer
+    );
 
     error SenderIsNotModule();
     error SenderIsNotEligible();
@@ -36,6 +45,7 @@ interface ICSAccounting is
     error NodeOperatorDoesNotExist();
     error ElRewardsVaultReceiveFailed();
     error InvalidBondCurvesLength();
+    error SameAddress();
 
     function PAUSE_ROLE() external view returns (bytes32);
 
@@ -50,8 +60,6 @@ interface ICSAccounting is
     function MODULE() external view returns (ICSModule);
 
     function FEE_DISTRIBUTOR() external view returns (ICSFeeDistributor);
-
-    function feeDistributor() external view returns (ICSFeeDistributor);
 
     function chargePenaltyRecipient() external view returns (address);
 
@@ -77,6 +85,19 @@ interface ICSAccounting is
     /// @param period Period in seconds to retain bond lock
     function setBondLockPeriod(uint256 period) external;
 
+    /// @notice Set fee splits for the given Node Operator
+    /// @param nodeOperatorId ID of the Node Operator
+    /// @param cumulativeFeeShares Cumulative fee stETH shares for the Node Operator
+    /// @param rewardsProof Merkle proof of the rewards
+    /// @param feeSplits Array of FeeSplit structs defining recipients and their shares in basis points
+    ///                  Total shares must be <= 10_000 (100%). Remainder goes to the Node Operator's bond
+    function setFeeSplits(
+        uint256 nodeOperatorId,
+        uint256 cumulativeFeeShares,
+        bytes32[] calldata rewardsProof,
+        FeeSplit[] calldata feeSplits
+    ) external;
+
     /// @notice Add a new bond curve
     /// @param bondCurve Bond curve definition to add
     /// @return id Id of the added curve
@@ -95,6 +116,23 @@ interface ICSAccounting is
         uint256 curveId,
         BondCurveIntervalInput[] calldata bondCurve
     ) external;
+
+    /// @notice Set custom rewards claimer for the given Node Operator. This address will be able to claim rewards on behalf of the Node Operator.
+    ///         The rewards will be transferred to the Node Operator's reward address as usual.
+    /// @param nodeOperatorId ID of the Node Operator
+    /// @param rewardsClaimer Address allowed to claim rewards on behalf of the Node Operator
+    function setCustomRewardsClaimer(
+        uint256 nodeOperatorId,
+        address rewardsClaimer
+    ) external;
+
+    /// @notice Get the custom rewards claimer for the given Node Operator. This address is allowed to claim rewards on behalf of the Node Operator.
+    ///         The rewards are still transferred to the Node Operator's reward address as usual.
+    /// @param nodeOperatorId ID of the Node Operator
+    /// @return rewardsClaimer Address allowed to claim rewards on behalf of the Node Operator
+    function getCustomRewardsClaimer(
+        uint256 nodeOperatorId
+    ) external view returns (address);
 
     /// @notice Get the required bond in ETH (inc. missed and excess) for the given Node Operator to upload new deposit data
     /// @param nodeOperatorId ID of the Node Operator
@@ -121,6 +159,18 @@ interface ICSAccounting is
     function getRequiredBondForNextKeysWstETH(
         uint256 nodeOperatorId,
         uint256 additionalKeys
+    ) external view returns (uint256);
+
+    /// @notice Set fee splits for the given Node Operator
+    /// @param nodeOperatorId ID of the Node Operator
+    /// @return Array of FeeSplit structs defining recipients and their shares in basis points
+    function getFeeSplits(
+        uint256 nodeOperatorId
+    ) external view returns (FeeSplit[] memory);
+
+    /// @notice Get the number of the pending shares to be split for the given Node Operator
+    function getPendingSharesToSplit(
+        uint256 nodeOperatorId
     ) external view returns (uint256);
 
     /// @notice Get the number of the unbonded keys
@@ -324,21 +374,29 @@ interface ICSAccounting is
     ///      Method call can result in the remaining bond being lower than the locked bond.
     /// @param nodeOperatorId ID of the Node Operator
     /// @param amount Amount to penalize in ETH (stETH)
-    function penalize(uint256 nodeOperatorId, uint256 amount) external;
+    /// @return fullyBurned True if the bond was fully burned, false otherwise
+    function penalize(
+        uint256 nodeOperatorId,
+        uint256 amount
+    ) external returns (bool fullyBurned);
 
     /// @notice Charge fee from bond by transferring stETH shares of the given Node Operator to the charge recipient
     /// @dev Charge confiscation has a priority over the locked bond.
     ///      Method call can result in the remaining bond being lower than the locked bond.
     /// @param nodeOperatorId ID of the Node Operator
     /// @param amount Amount to charge in ETH (stETH)
-    function chargeFee(uint256 nodeOperatorId, uint256 amount) external;
+    /// @return fullyCharged True if the bond was fully charged, false otherwise
+    function chargeFee(
+        uint256 nodeOperatorId,
+        uint256 amount
+    ) external returns (bool fullyCharged);
 
-    /// @notice Pull fees from CSFeeDistributor to the Node Operator's bond
-    /// @dev Permissionless method. Can be called before penalty application to ensure that rewards are also penalized
+    /// @notice Pull fees (if proof provided) from CSFeeDistributor to the Node Operator's bond and split pending according to configured fee splits.
+    /// @dev Permissionless method. Can be called before penalty application to ensure that rewards are also penalized and split.
     /// @param nodeOperatorId ID of the Node Operator
     /// @param cumulativeFeeShares Cumulative fee stETH shares for the Node Operator
     /// @param rewardsProof Merkle proof of the rewards
-    function pullFeeRewards(
+    function pullAndSplitFeeRewards(
         uint256 nodeOperatorId,
         uint256 cumulativeFeeShares,
         bytes32[] calldata rewardsProof

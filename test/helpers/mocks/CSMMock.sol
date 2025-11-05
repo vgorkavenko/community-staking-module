@@ -13,6 +13,8 @@ import { LidoMock } from "./LidoMock.sol";
 import { Utilities } from "../Utilities.sol";
 import { LidoLocatorMock } from "./LidoLocatorMock.sol";
 import { Fixtures } from "../Fixtures.sol";
+import { INodeOperatorOwner } from "../../../src/interfaces/INodeOperatorOwner.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 contract CSMMock is Utilities, Fixtures {
     NodeOperator internal mockNodeOperator;
@@ -33,7 +35,12 @@ contract CSMMock is Utilities, Fixtures {
         (LIDO_LOCATOR, wstETH, lido, , ) = initLido();
         ACCOUNTING = ICSAccounting(
             address(
-                new CSAccountingMock(2 ether, address(wstETH), address(lido))
+                new CSAccountingMock(
+                    2 ether,
+                    address(wstETH),
+                    address(lido),
+                    address(1337)
+                )
             )
         );
     }
@@ -65,8 +72,11 @@ contract CSMMock is Utilities, Fixtures {
     }
 
     function getNodeOperatorOwner(
-        uint256 /* nodeOperatorId */
+        uint256 nodeOperatorId
     ) external view returns (address) {
+        if (nodeOperatorId != 0) {
+            return address(0);
+        }
         return
             managementProperties.extendedManagerPermissions
                 ? managementProperties.managerAddress
@@ -148,5 +158,34 @@ contract CSMMock is Utilities, Fixtures {
         uint256 /* nodeOperatorId */
     ) external view returns (uint256) {
         return PARAMETERS_REGISTRY.getAllowedExitDelay(0);
+    }
+
+    function supportsInterface(
+        bytes4 interfaceId
+    ) external pure returns (bool) {
+        return
+            interfaceId == type(INodeOperatorOwner).interfaceId ||
+            interfaceId == type(IERC165).interfaceId;
+    }
+}
+
+contract NodeOperatorOwnerNo165Mock {
+    address internal _owner;
+
+    constructor(address owner) {
+        _owner = owner;
+    }
+
+    function setOwner(address owner) external {
+        _owner = owner;
+    }
+
+    function getNodeOperatorOwner(
+        uint256 nodeOperatorId
+    ) external view returns (address) {
+        if (nodeOperatorId != 0) {
+            return address(0);
+        }
+        return _owner;
     }
 }

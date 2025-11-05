@@ -8,6 +8,7 @@ import { ICSBondLock } from "../../../src/interfaces/ICSBondLock.sol";
 import { ICSModule } from "../../../src/interfaces/ICSModule.sol";
 import { IWstETH } from "../../../src/interfaces/IWstETH.sol";
 import { ILido } from "../../../src/interfaces/ILido.sol";
+import { ICSFeeDistributor } from "../../../src/interfaces/ICSFeeDistributor.sol";
 
 contract CSAccountingMock {
     uint256 public constant DEFAULT_BOND_CURVE_ID = 0;
@@ -21,22 +22,24 @@ contract CSAccountingMock {
     mapping(uint256 nodeOperatorId => uint256 bondCurveId) operatorBondCurveId;
     uint256[] bondCurves;
 
-    ICSModule public csm;
-    address public feeDistributor;
+    ICSModule public MODULE;
     IWstETH public wstETH;
+    ICSFeeDistributor public FEE_DISTRIBUTOR;
 
-    constructor(uint256 _bond, address _wstETH, address lido) {
+    constructor(
+        uint256 _bond,
+        address _wstETH,
+        address lido,
+        address _feeDistributor
+    ) {
         bondCurves.push(_bond);
         wstETH = IWstETH(_wstETH);
         LIDO = ILido(lido);
+        FEE_DISTRIBUTOR = ICSFeeDistributor(_feeDistributor);
     }
 
-    function setCSM(address _csm) external {
-        csm = ICSModule(_csm);
-    }
-
-    function setFeeDistributor(address _feeDistributor) external {
-        feeDistributor = _feeDistributor;
+    function setModule(ICSModule _module) external {
+        MODULE = _module;
     }
 
     function depositETH(
@@ -127,19 +130,29 @@ contract CSAccountingMock {
         bondCurves[curveId] = _bond;
     }
 
-    function penalize(uint256 nodeOperatorId, uint256 amount) external {
+    function penalize(
+        uint256 nodeOperatorId,
+        uint256 amount
+    ) external returns (bool fullyBurned) {
         if (bond[nodeOperatorId] < amount) {
             bond[nodeOperatorId] = 0;
+            fullyBurned = false;
         } else {
             bond[nodeOperatorId] -= amount;
+            fullyBurned = true;
         }
     }
 
-    function chargeFee(uint256 nodeOperatorId, uint256 amount) external {
+    function chargeFee(
+        uint256 nodeOperatorId,
+        uint256 amount
+    ) external returns (bool fullyCharged) {
         if (bond[nodeOperatorId] < amount) {
             bond[nodeOperatorId] = 0;
+            fullyCharged = false;
         } else {
             bond[nodeOperatorId] -= amount;
+            fullyCharged = true;
         }
     }
 
@@ -153,7 +166,7 @@ contract CSAccountingMock {
         return (
             bond[nodeOperatorId],
             getBondAmountByKeysCount(
-                csm.getNodeOperatorNonWithdrawnKeys(nodeOperatorId),
+                MODULE.getNodeOperatorNonWithdrawnKeys(nodeOperatorId),
                 operatorBondCurveId[nodeOperatorId]
             ) + getActualLockedBond(nodeOperatorId)
         );
@@ -165,7 +178,7 @@ contract CSAccountingMock {
     ) public view returns (uint256) {
         uint256 current = getBond(nodeOperatorId);
         uint256 requiredForNewTotalKeys = getBondAmountByKeysCount(
-            csm.getNodeOperatorNonWithdrawnKeys(nodeOperatorId) +
+            MODULE.getNodeOperatorNonWithdrawnKeys(nodeOperatorId) +
                 additionalKeys,
             operatorBondCurveId[nodeOperatorId]
         );

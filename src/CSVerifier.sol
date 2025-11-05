@@ -5,7 +5,7 @@ pragma solidity 0.8.24;
 
 import { AccessControlEnumerable } from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 
-import { BeaconBlockHeader, Slot, Validator, Withdrawal } from "./lib/Types.sol";
+import { BeaconBlockHeader, Slot, Validator, Withdrawal, PendingConsolidation } from "./lib/Types.sol";
 import { PausableUntil } from "./lib/utils/PausableUntil.sol";
 import { GIndex } from "./lib/GIndex.sol";
 import { SSZ } from "./lib/SSZ.sol";
@@ -28,6 +28,7 @@ function gweiToWei(uint64 amount) pure returns (uint256) {
 contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
     using { amountWei } for Withdrawal;
 
+    using SSZ for PendingConsolidation;
     using SSZ for BeaconBlockHeader;
     using SSZ for Withdrawal;
     using SSZ for Validator;
@@ -69,6 +70,18 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
     /// @dev This index is relative to HistoricalSummary like: HistoricalSummary.blockRoots[0].
     GIndex public immutable GI_FIRST_BLOCK_ROOT_IN_SUMMARY_CURR;
 
+    /// @dev This index is relative to a state like: `BeaconState.balances[0]`.
+    GIndex public immutable GI_FIRST_BALANCES_NODE_PREV;
+
+    /// @dev This index is relative to a state like: `BeaconState.balances[0]`.
+    GIndex public immutable GI_FIRST_BALANCES_NODE_CURR;
+
+    /// @dev This index is relative to a state like: `BeaconState.pending_consolidations[0]`.
+    GIndex public immutable GI_FIRST_PENDING_CONSOLIDATION_PREV;
+
+    /// @dev This index is relative to a state like: `BeaconState.pending_consolidations[0]`.
+    GIndex public immutable GI_FIRST_PENDING_CONSOLIDATION_CURR;
+
     /// @dev The very first slot the verifier is supposed to accept proofs for.
     Slot public immutable FIRST_SUPPORTED_SLOT;
 
@@ -83,6 +96,9 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
 
     /// @dev Staking module contract.
     ICSModule public immutable MODULE;
+
+    /// @dev Placeholder for slashing penalty value in ValidatorWithdrawalInfo.
+    uint256 internal constant NO_SLASHING_PENALTY = 0;
 
     /// @dev The previous and current forks can be essentially the same.
     constructor(
@@ -146,6 +162,14 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
         GI_FIRST_BLOCK_ROOT_IN_SUMMARY_CURR = gindices
             .gIFirstBlockRootInSummaryCurr;
 
+        GI_FIRST_BALANCES_NODE_PREV = gindices.gIFirstBalanceNodePrev;
+        GI_FIRST_BALANCES_NODE_CURR = gindices.gIFirstBalanceNodeCurr;
+
+        GI_FIRST_PENDING_CONSOLIDATION_PREV = gindices
+            .gIFirstPendingConsolidationPrev;
+        GI_FIRST_PENDING_CONSOLIDATION_CURR = gindices
+            .gIFirstPendingConsolidationCurr;
+
         FIRST_SUPPORTED_SLOT = firstSupportedSlot;
         PIVOT_SLOT = pivotSlot;
         CAPELLA_SLOT = capellaSlot;
@@ -164,104 +188,277 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
     }
 
     /// @inheritdoc ICSVerifier
-    function processWithdrawalProof(
-        ProvableBeaconBlockHeader calldata beaconBlock,
-        WithdrawalWitness calldata witness,
-        uint256 nodeOperatorId,
-        uint256 keyIndex
+    function processSlashedProof(
+        ProcessSlashedInput calldata data
     ) external whenResumed {
-        if (beaconBlock.header.slot < FIRST_SUPPORTED_SLOT) {
-            revert UnsupportedSlot(beaconBlock.header.slot);
+        if (data.recentBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.recentBlock.header.slot);
         }
 
         {
             bytes32 trustedHeaderRoot = _getParentBlockRoot(
-                beaconBlock.rootsTimestamp
+                data.recentBlock.rootsTimestamp
             );
-            if (trustedHeaderRoot != beaconBlock.header.hashTreeRoot()) {
+            if (trustedHeaderRoot != data.recentBlock.header.hashTreeRoot()) {
                 revert InvalidBlockHeader();
             }
         }
 
-        bytes memory pubkey = MODULE.getSigningKeys(
-            nodeOperatorId,
-            keyIndex,
-            1
-        );
+        if (!data.validator.object.slashed) {
+            revert ValidatorIsNotSlashed();
+        }
 
-        uint256 withdrawalAmount = _processWithdrawalProof({
-            witness: witness,
-            stateSlot: beaconBlock.header.slot,
-            stateRoot: beaconBlock.header.stateRoot,
-            pubkey: pubkey
+        // TODO: Consider uncommenting or removing the block.
+        // if (
+        //     _computeEpochAtSlot(data.recentBlock.header.slot) <
+        //     data.validator.object.withdrawableEpoch
+        // ) {
+        //     revert ValidatorIsNotWithdrawable();
+        // }
+
+        {
+            bytes memory pubkey = MODULE.getSigningKeys(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                1
+            );
+
+            if (keccak256(pubkey) != keccak256(data.validator.object.pubkey)) {
+                revert InvalidPublicKey();
+            }
+        }
+
+        SSZ.verifyProof({
+            proof: data.validator.proof,
+            root: data.recentBlock.header.stateRoot,
+            leaf: data.validator.object.hashTreeRoot(),
+            gI: _getValidatorGI(
+                data.validator.index,
+                data.recentBlock.header.slot
+            )
         });
 
-        ValidatorWithdrawalInfo[]
-            memory withdrawalsInfo = new ValidatorWithdrawalInfo[](1);
-        withdrawalsInfo[0] = ValidatorWithdrawalInfo(
-            nodeOperatorId,
-            keyIndex,
-            withdrawalAmount
+        MODULE.onValidatorSlashed(
+            data.validator.nodeOperatorId,
+            data.validator.keyIndex
         );
-        MODULE.submitWithdrawals(withdrawalsInfo);
     }
 
     /// @inheritdoc ICSVerifier
-    function processHistoricalWithdrawalProof(
-        ProvableBeaconBlockHeader calldata beaconBlock,
-        HistoricalHeaderWitness calldata oldBlock,
-        WithdrawalWitness calldata witness,
-        uint256 nodeOperatorId,
-        uint256 keyIndex
+    function processWithdrawalProof(
+        ProcessWithdrawalInput calldata data
     ) external whenResumed {
-        if (beaconBlock.header.slot < FIRST_SUPPORTED_SLOT) {
-            revert UnsupportedSlot(beaconBlock.header.slot);
-        }
-
-        if (oldBlock.header.slot < FIRST_SUPPORTED_SLOT) {
-            revert UnsupportedSlot(oldBlock.header.slot);
+        if (data.withdrawalBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.withdrawalBlock.header.slot);
         }
 
         {
             bytes32 trustedHeaderRoot = _getParentBlockRoot(
-                beaconBlock.rootsTimestamp
+                data.withdrawalBlock.rootsTimestamp
             );
-            bytes32 headerRoot = beaconBlock.header.hashTreeRoot();
+            if (
+                trustedHeaderRoot != data.withdrawalBlock.header.hashTreeRoot()
+            ) {
+                revert InvalidBlockHeader();
+            }
+        }
+
+        {
+            bytes memory pubkey = MODULE.getSigningKeys(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                1
+            );
+
+            if (keccak256(pubkey) != keccak256(data.validator.object.pubkey)) {
+                revert InvalidPublicKey();
+            }
+        }
+
+        uint256 withdrawalAmount = _processWithdrawalProof(
+            data.withdrawal,
+            data.validator,
+            data.withdrawalBlock.header
+        );
+
+        _submitSingleWithdrawal(
+            ValidatorWithdrawalInfo(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                withdrawalAmount,
+                NO_SLASHING_PENALTY
+            )
+        );
+    }
+
+    /// @inheritdoc ICSVerifier
+    function processHistoricalWithdrawalProof(
+        ProcessHistoricalWithdrawalInput calldata data
+    ) external whenResumed {
+        if (data.recentBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.recentBlock.header.slot);
+        }
+
+        if (data.withdrawalBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.withdrawalBlock.header.slot);
+        }
+
+        {
+            bytes32 trustedHeaderRoot = _getParentBlockRoot(
+                data.recentBlock.rootsTimestamp
+            );
+            bytes32 headerRoot = data.recentBlock.header.hashTreeRoot();
             if (trustedHeaderRoot != headerRoot) {
                 revert InvalidBlockHeader();
             }
         }
 
+        {
+            bytes memory pubkey = MODULE.getSigningKeys(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                1
+            );
+
+            if (keccak256(pubkey) != keccak256(data.validator.object.pubkey)) {
+                revert InvalidPublicKey();
+            }
+        }
+
         SSZ.verifyProof({
-            proof: oldBlock.proof,
-            root: beaconBlock.header.stateRoot,
-            leaf: oldBlock.header.hashTreeRoot(),
+            proof: data.withdrawalBlock.proof,
+            root: data.recentBlock.header.stateRoot,
+            leaf: data.withdrawalBlock.header.hashTreeRoot(),
             gI: _getHistoricalBlockRootGI(
-                beaconBlock.header.slot,
-                oldBlock.header.slot
+                data.recentBlock.header.slot,
+                data.withdrawalBlock.header.slot
             )
         });
 
-        bytes memory pubkey = MODULE.getSigningKeys(
-            nodeOperatorId,
-            keyIndex,
-            1
+        uint256 withdrawalAmount = _processWithdrawalProof(
+            data.withdrawal,
+            data.validator,
+            data.withdrawalBlock.header
         );
 
-        uint256 withdrawalAmount = _processWithdrawalProof({
-            witness: witness,
-            stateSlot: oldBlock.header.slot,
-            stateRoot: oldBlock.header.stateRoot,
-            pubkey: pubkey
+        _submitSingleWithdrawal(
+            ValidatorWithdrawalInfo(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                withdrawalAmount,
+                NO_SLASHING_PENALTY
+            )
+        );
+    }
+
+    /// @inheritdoc ICSVerifier
+    function processConsolidation(
+        ProcessConsolidationInput calldata data
+    ) external whenResumed {
+        if (data.recentBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.recentBlock.header.slot);
+        }
+
+        if (data.consolidationBlock.header.slot < FIRST_SUPPORTED_SLOT) {
+            revert UnsupportedSlot(data.consolidationBlock.header.slot);
+        }
+
+        if (data.validator.object.slashed) {
+            revert ValidatorIsSlashed();
+        }
+
+        {
+            bytes memory pubkey = MODULE.getSigningKeys(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                1
+            );
+
+            if (keccak256(pubkey) != keccak256(data.validator.object.pubkey)) {
+                revert InvalidPublicKey();
+            }
+        }
+
+        if (
+            _computeEpochAtSlot(data.recentBlock.header.slot) <
+            data.validator.object.withdrawableEpoch
+        ) {
+            revert ValidatorIsNotWithdrawable();
+        }
+
+        if (data.consolidation.object.sourceIndex != data.validator.index) {
+            revert InvalidConsolidationSource();
+        }
+
+        // Verify recent block's header.
+        {
+            bytes32 trustedHeaderRoot = _getParentBlockRoot(
+                data.recentBlock.rootsTimestamp
+            );
+            bytes32 headerRoot = data.recentBlock.header.hashTreeRoot();
+            if (trustedHeaderRoot != headerRoot) {
+                revert InvalidBlockHeader();
+            }
+        }
+
+        // Verify consolidation block header.
+        SSZ.verifyProof({
+            proof: data.consolidationBlock.proof,
+            root: data.recentBlock.header.stateRoot,
+            leaf: data.consolidationBlock.header.hashTreeRoot(),
+            gI: _getHistoricalBlockRootGI(
+                data.recentBlock.header.slot,
+                data.consolidationBlock.header.slot
+            )
         });
 
+        // Verify PendingConsolidation object against the consolidation block.
+        SSZ.verifyProof({
+            proof: data.consolidation.proof,
+            root: data.consolidationBlock.header.stateRoot,
+            leaf: data.consolidation.object.hashTreeRoot(),
+            gI: _getPendingConsolidationGI(
+                data.consolidation.offset,
+                data.consolidationBlock.header.slot
+            )
+        });
+
+        // Verify Validator object against the recent block.
+        SSZ.verifyProof({
+            proof: data.validator.proof,
+            root: data.recentBlock.header.stateRoot,
+            leaf: data.validator.object.hashTreeRoot(),
+            gI: _getValidatorGI(
+                data.validator.index,
+                data.recentBlock.header.slot
+            )
+        });
+
+        // Verify validator's balance against the consolidation block.
+        uint64 balanceGwei = _verifyValidatorBalance({
+            validatorIndex: data.validator.index,
+            balanceNode: data.balance.node,
+            stateRoot: data.consolidationBlock.header.stateRoot,
+            stateSlot: data.consolidationBlock.header.slot,
+            proof: data.balance.proof
+        });
+
+        _submitSingleWithdrawal(
+            ValidatorWithdrawalInfo(
+                data.validator.nodeOperatorId,
+                data.validator.keyIndex,
+                gweiToWei(balanceGwei),
+                NO_SLASHING_PENALTY
+            )
+        );
+    }
+
+    function _submitSingleWithdrawal(
+        ValidatorWithdrawalInfo memory info
+    ) internal {
         ValidatorWithdrawalInfo[]
             memory withdrawalsInfo = new ValidatorWithdrawalInfo[](1);
-        withdrawalsInfo[0] = ValidatorWithdrawalInfo(
-            nodeOperatorId,
-            keyIndex,
-            withdrawalAmount
-        );
+        withdrawalsInfo[0] = info;
         MODULE.submitWithdrawals(withdrawalsInfo);
     }
 
@@ -279,23 +476,37 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
         return abi.decode(data, (bytes32));
     }
 
-    /// @dev `stateRoot` is supposed to be trusted at this point.
+    /// @dev `header` MUST be trusted at this point.
     function _processWithdrawalProof(
-        WithdrawalWitness calldata witness,
-        Slot stateSlot,
-        bytes32 stateRoot,
-        bytes memory pubkey
+        WithdrawalWitness calldata withdrawal,
+        ValidatorWitness calldata validator,
+        BeaconBlockHeader calldata header
     ) internal view returns (uint256 withdrawalAmount) {
-        // WC to address
-        address withdrawalAddress = address(
-            uint160(uint256(witness.withdrawalCredentials))
-        );
-        if (withdrawalAddress != WITHDRAWAL_ADDRESS) {
+        if (
+            address(uint160(uint256(validator.object.withdrawalCredentials))) !=
+            WITHDRAWAL_ADDRESS
+        ) {
+            revert InvalidWithdrawalAddress();
+        }
+        if (withdrawal.object.withdrawalAddress != WITHDRAWAL_ADDRESS) {
             revert InvalidWithdrawalAddress();
         }
 
-        if (_computeEpochAtSlot(stateSlot) < witness.withdrawableEpoch) {
-            revert ValidatorNotWithdrawn();
+        // The methods in this contract do not accept proofs of withdrawals from slashed validators. It is proposed that
+        // such withdrawals be processed off-chain and reported directly to the CSModule using EasyTracks.
+        if (validator.object.slashed) {
+            revert ValidatorIsSlashed();
+        }
+
+        if (
+            _computeEpochAtSlot(header.slot) <
+            validator.object.withdrawableEpoch
+        ) {
+            revert ValidatorIsNotWithdrawable();
+        }
+
+        if (withdrawal.object.validatorIndex != validator.index) {
+            revert InvalidValidatorIndex();
         }
 
         // See https://hackmd.io/1wM8vqeNTjqt4pC3XoCUKQ
@@ -305,58 +516,85 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
         // - wait for full withdrawal & sweep
         // - be lucky enough that no one provides proof for this withdrawal for at least 1 sweep cycle
         //  (~8 days with the network of 1M active validators)
-        // - deposit 1 ETH for slashed or 8 ETH for non-slashed validator
+        // - deposit 15 ETH for non-slashed validator
         // - wait for a sweep of this deposit
         // - provide proof of the last withdrawal
         // As a result, the Node Operator's bond will be penalized for 32 ETH - additional deposit value
         // However, all ETH involved,
-        // including 1 or 8 ETH deposited by the attacker will remain in the Lido on Ethereum protocol
+        // including 15 ETH deposited by the attacker will remain in the Lido on Ethereum protocol
         // Hence, the only consequence of the attack is an inconsistency in the bond accounting that can be resolved
         // through the bond deposit approved by the corresponding DAO decision
         //
         // Resolution:
         // Given no losses for the protocol,
-        // significant cost of attack (1 or 8 ETH),
+        // significant cost of attack (15 ETH),
         // and lack of feasible ways to mitigate it in the smart contract's code,
         // it is proposed to acknowledge possibility of the attack
         // and be ready to propose a corresponding vote to the DAO if it will ever happen
-        if (!witness.slashed && gweiToWei(witness.amount) < 8 ether) {
+        withdrawalAmount = withdrawal.object.amountWei();
+        if (withdrawalAmount < 15 ether) {
             revert PartialWithdrawal();
         }
 
-        Validator memory validator = Validator({
-            pubkey: pubkey,
-            withdrawalCredentials: witness.withdrawalCredentials,
-            effectiveBalance: witness.effectiveBalance,
-            slashed: witness.slashed,
-            activationEligibilityEpoch: witness.activationEligibilityEpoch,
-            activationEpoch: witness.activationEpoch,
-            exitEpoch: witness.exitEpoch,
-            withdrawableEpoch: witness.withdrawableEpoch
+        SSZ.verifyProof({
+            proof: validator.proof,
+            root: header.stateRoot,
+            leaf: validator.object.hashTreeRoot(),
+            gI: _getValidatorGI(validator.index, header.slot)
         });
 
         SSZ.verifyProof({
-            proof: witness.validatorProof,
-            root: stateRoot,
-            leaf: validator.hashTreeRoot(),
-            gI: _getValidatorGI(witness.validatorIndex, stateSlot)
+            proof: withdrawal.proof,
+            root: header.stateRoot,
+            leaf: withdrawal.object.hashTreeRoot(),
+            gI: _getWithdrawalGI(withdrawal.offset, header.slot)
         });
+    }
 
-        Withdrawal memory withdrawal = Withdrawal({
-            index: witness.withdrawalIndex,
-            validatorIndex: witness.validatorIndex,
-            withdrawalAddress: withdrawalAddress,
-            amount: witness.amount
-        });
+    /// @return balanceGwei Validator's balance in gwei.
+    function _verifyValidatorBalance(
+        uint256 validatorIndex,
+        bytes32 balanceNode,
+        bytes32 stateRoot,
+        Slot stateSlot,
+        bytes32[] calldata proof
+    ) internal view returns (uint64 balanceGwei) {
+        GIndex gI;
+
+        (gI, balanceGwei) = _getValidatorBalanceNodeInfo(
+            balanceNode,
+            validatorIndex,
+            stateSlot
+        );
 
         SSZ.verifyProof({
-            proof: witness.withdrawalProof,
+            proof: proof,
             root: stateRoot,
-            leaf: withdrawal.hashTreeRoot(),
-            gI: _getWithdrawalGI(witness.withdrawalOffset, stateSlot)
+            leaf: balanceNode,
+            gI: gI
         });
+    }
 
-        return withdrawal.amountWei();
+    /// @return gI Generalized index of the node for the `validatorIndex` and `stateSlot`.
+    /// @return balanceGwei Balance in gwei extracted from the `balanceNode`.
+    function _getValidatorBalanceNodeInfo(
+        bytes32 balanceNode,
+        uint256 validatorIndex,
+        Slot stateSlot
+    ) internal view returns (GIndex gI, uint64 balanceGwei) {
+        // `BeaconState.balances` is a list of uint64 values. SSZ packs 4 individual values into a single 32-byte node.
+        // Hence, balances[0-3] share the same generalized index.
+        gI = _getValidatorBalanceGI(validatorIndex / 4, stateSlot);
+
+        // prettier-ignore
+        assembly ("memory-safe") {
+            let valueLeftMostBit := mul(64, mod(validatorIndex, 4))
+            balanceNode := shl(valueLeftMostBit, balanceNode) // Shift the value to the left side.
+            balanceNode := and(balanceNode, 0xFFFFFFFFFFFFFFFF000000000000000000000000000000000000000000000000)
+        }
+        // The values are encoded in little-endian order, so we need to convert them to big-endian byte order first.
+        balanceNode = SSZ.endianReverse(balanceNode);
+        balanceGwei = uint64(uint256(balanceNode));
     }
 
     function _getValidatorGI(
@@ -376,6 +614,26 @@ contract CSVerifier is ICSVerifier, AccessControlEnumerable, PausableUntil {
         GIndex gI = stateSlot < PIVOT_SLOT
             ? GI_FIRST_WITHDRAWAL_PREV
             : GI_FIRST_WITHDRAWAL_CURR;
+        return gI.shr(offset);
+    }
+
+    function _getValidatorBalanceGI(
+        uint256 offset,
+        Slot stateSlot
+    ) internal view returns (GIndex) {
+        GIndex gI = stateSlot < PIVOT_SLOT
+            ? GI_FIRST_BALANCES_NODE_PREV
+            : GI_FIRST_BALANCES_NODE_CURR;
+        return gI.shr(offset);
+    }
+
+    function _getPendingConsolidationGI(
+        uint256 offset,
+        Slot stateSlot
+    ) internal view returns (GIndex) {
+        GIndex gI = stateSlot < PIVOT_SLOT
+            ? GI_FIRST_PENDING_CONSOLIDATION_PREV
+            : GI_FIRST_PENDING_CONSOLIDATION_CURR;
         return gI.shr(offset);
     }
 

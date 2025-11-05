@@ -34,15 +34,15 @@ using QueueLib for QueueLib.Queue;
 
 contract CSModuleInvariants is InvariantsBase {
     function test_keys() public noGasMetering {
-        assertCSMKeys(csm);
+        assertModuleKeys(csm);
     }
 
     function test_enqueuedCount() public noGasMetering {
-        assertCSMEnqueuedCount(csm);
+        assertModuleEnqueuedCount(csm);
     }
 
     function test_unusedStorageSlots() public noGasMetering {
-        assertCSMUnusedStorageSlots(csm);
+        assertModuleUnusedStorageSlots(csm);
     }
 
     function test_roles() public view {
@@ -86,33 +86,29 @@ contract CSModuleInvariants is InvariantsBase {
         );
 
         assertEq(
-            csm.getRoleMemberCount(
-                csm.REPORT_EL_REWARDS_STEALING_PENALTY_ROLE()
-            ),
+            csm.getRoleMemberCount(csm.REPORT_GENERAL_DELAYED_PENALTY_ROLE()),
             1,
-            "report el rewards stealing penalty"
+            "report general delayed penalty"
         );
         assertTrue(
             csm.hasRole(
-                csm.REPORT_EL_REWARDS_STEALING_PENALTY_ROLE(),
-                deployParams.elRewardsStealingReporter
+                csm.REPORT_GENERAL_DELAYED_PENALTY_ROLE(),
+                deployParams.generalDelayedPenaltyReporter
             ),
-            "report el rewards stealing penalty address"
+            "report general delayed penalty address"
         );
 
         assertEq(
-            csm.getRoleMemberCount(
-                csm.SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE()
-            ),
+            csm.getRoleMemberCount(csm.SETTLE_GENERAL_DELAYED_PENALTY_ROLE()),
             1,
-            "settle el rewards stealing penalty"
+            "settle general delayed penalty"
         );
         assertTrue(
             csm.hasRole(
-                csm.SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE(),
+                csm.SETTLE_GENERAL_DELAYED_PENALTY_ROLE(),
                 deployParams.easyTrackEVMScriptExecutor
             ),
-            "settle el rewards stealing penalty address"
+            "settle general delayed penalty address"
         );
 
         assertEq(csm.getRoleMemberCount(csm.VERIFIER_ROLE()), 1, "verifier");

@@ -22,7 +22,7 @@ import { ICSBondCore } from "../interfaces/ICSBondCore.sol";
 ///  - burn
 ///
 /// Should be inherited by Module contract, or Module-related contract.
-/// Internal non-view methods should be used in Module contract with additional requirements (if any).
+/// Internal non-view methods should be used in Module or Module-related contract with additional requirements (if any).
 ///
 /// @author vgorkavenko
 abstract contract CSBondCore is ICSBondCore {
@@ -129,12 +129,14 @@ abstract contract CSBondCore is ICSBondCore {
 
     /// @dev Claim Node Operator's excess bond shares (stETH) in ETH by requesting withdrawal from the protocol
     ///      As a usual withdrawal request, this claim might be processed on the next stETH rebase
+    ///      Due to direct interaction with Withdrawal Queue, the limits on withdrawal amount from WITHDRAWAL_QUEUE contract are implicitly applied
+    ///      Namely, the method will revert on attempt to claim more stETH than WQ.MAX_STETH_WITHDRAWAL_AMOUNT() and less than WQ.MIN_STETH_WITHDRAWAL_AMOUNT().
     function _claimUnstETH(
         uint256 nodeOperatorId,
         uint256 requestedAmountToClaim,
+        uint256 claimableShares,
         address to
     ) internal returns (uint256 requestId) {
-        uint256 claimableShares = _getClaimableBondShares(nodeOperatorId);
         uint256 sharesToClaim = requestedAmountToClaim <
             _ethByShares(claimableShares)
             ? _sharesByEth(requestedAmountToClaim)
@@ -158,9 +160,9 @@ abstract contract CSBondCore is ICSBondCore {
     function _claimStETH(
         uint256 nodeOperatorId,
         uint256 requestedAmountToClaim,
+        uint256 claimableShares,
         address to
     ) internal returns (uint256 sharesToClaim) {
-        uint256 claimableShares = _getClaimableBondShares(nodeOperatorId);
         sharesToClaim = requestedAmountToClaim < _ethByShares(claimableShares)
             ? _sharesByEth(requestedAmountToClaim)
             : claimableShares;
@@ -178,9 +180,9 @@ abstract contract CSBondCore is ICSBondCore {
     function _claimWstETH(
         uint256 nodeOperatorId,
         uint256 requestedAmountToClaim,
+        uint256 claimableShares,
         address to
     ) internal returns (uint256 wstETHAmount) {
-        uint256 claimableShares = _getClaimableBondShares(nodeOperatorId);
         uint256 sharesToClaim = requestedAmountToClaim < claimableShares
             ? requestedAmountToClaim
             : claimableShares;
@@ -199,12 +201,23 @@ abstract contract CSBondCore is ICSBondCore {
     /// @dev Burn Node Operator's bond shares (stETH). Shares will be burned on the next stETH rebase
     /// @dev The contract that uses this implementation should be granted `Burner.REQUEST_BURN_SHARES_ROLE` and have stETH allowance for `Burner`
     /// @param amount Bond amount to burn in ETH (stETH)
-    function _burn(uint256 nodeOperatorId, uint256 amount) internal {
+    /// @return notBurnedAmount Amount in ETH that was not burned due to insufficient bond shares
+    function _burn(
+        uint256 nodeOperatorId,
+        uint256 amount
+    ) internal returns (uint256 notBurnedAmount) {
         uint256 sharesToBurn = _sharesByEth(amount);
         uint256 burnedShares = _reduceBond(nodeOperatorId, sharesToBurn);
+
         // If no bond already or the amount to burn is zero
         if (burnedShares == 0) {
-            return;
+            return amount;
+        }
+
+        uint256 amountToBurn = _ethByShares(sharesToBurn);
+        uint256 amountBurned = _ethByShares(burnedShares);
+        unchecked {
+            notBurnedAmount = amountToBurn - amountBurned;
         }
 
         // TODO: Replace with `requestBurnMyShares` (https://github.com/lidofinance/core/pull/1142) in the next major release
@@ -212,26 +225,26 @@ abstract contract CSBondCore is ICSBondCore {
             address(this),
             burnedShares
         );
-        emit BondBurned(
-            nodeOperatorId,
-            _ethByShares(sharesToBurn),
-            _ethByShares(burnedShares)
-        );
+
+        emit BondBurned(nodeOperatorId, amountToBurn, amountBurned);
     }
 
     /// @dev Transfer Node Operator's bond shares (stETH) to charge recipient
     /// @param amount Bond amount to charge in ETH (stETH)
     /// @param recipient Address to send charged shares
+    /// @return fullyCharged True if the amount to charge is equal to the amount charged
     function _charge(
         uint256 nodeOperatorId,
         uint256 amount,
         address recipient
-    ) internal {
+    ) internal returns (bool fullyCharged) {
         uint256 toChargeShares = _sharesByEth(amount);
         uint256 chargedShares = _reduceBond(nodeOperatorId, toChargeShares);
+        fullyCharged = chargedShares == toChargeShares; // fully charged if the amount to charge is equal to the amount reduced
+
         // If no bond already or the amount to charge is zero
         if (chargedShares == 0) {
-            return;
+            return fullyCharged;
         }
 
         uint256 chargedEth = LIDO.transferShares(recipient, chargedShares);
@@ -243,11 +256,14 @@ abstract contract CSBondCore is ICSBondCore {
         );
     }
 
-    /// @dev Must be overridden in case of additional restrictions on a claimable bond amount
-    function _getClaimableBondShares(
-        uint256 nodeOperatorId
-    ) internal view virtual returns (uint256) {
-        return _getCSBondCoreStorage().bondShares[nodeOperatorId];
+    /// @dev Unsafe reduce bond shares (stETH) (possible underflow). Safety checks should be done outside
+    function _unsafeReduceBond(
+        uint256 nodeOperatorId,
+        uint256 shares
+    ) internal {
+        CSBondCoreStorage storage $ = _getCSBondCoreStorage();
+        $.bondShares[nodeOperatorId] -= shares;
+        $.totalBondShares -= shares;
     }
 
     /// @dev Shortcut for Lido's getSharesByPooledEth
@@ -266,13 +282,6 @@ abstract contract CSBondCore is ICSBondCore {
         }
 
         return LIDO.getPooledEthByShares(shares);
-    }
-
-    /// @dev Unsafe reduce bond shares (stETH) (possible underflow). Safety checks should be done outside
-    function _unsafeReduceBond(uint256 nodeOperatorId, uint256 shares) private {
-        CSBondCoreStorage storage $ = _getCSBondCoreStorage();
-        $.bondShares[nodeOperatorId] -= shares;
-        $.totalBondShares -= shares;
     }
 
     /// @dev Safe reduce bond shares (stETH). The maximum shares to reduce is the current bond shares

@@ -26,9 +26,9 @@ contract StakingRouterIntegrationTest is
         _;
         vm.pauseGasMetering();
         uint256 noCount = csm.getNodeOperatorsCount();
-        assertCSMKeys(csm);
-        assertCSMEnqueuedCount(csm);
-        assertCSMUnusedStorageSlots(csm);
+        assertModuleKeys(csm);
+        assertModuleEnqueuedCount(csm);
+        assertModuleUnusedStorageSlots(csm);
         assertAccountingTotalBondShares(noCount, lido, accounting);
         assertAccountingBurnerApproval(
             lido,
@@ -397,11 +397,11 @@ contract StakingRouterIntegrationTest is
 
         ExitPenaltyInfo memory exitPenaltyInfo = exitPenalties
             .getExitPenaltyInfo(noId, publicKey);
-        uint256 expectedPenalty = parametersRegistry.getExitDelayPenalty(
+        uint256 expectedPenalty = parametersRegistry.getExitDelayFee(
             accounting.getBondCurveId(noId)
         );
 
-        assertTrue(exitPenaltyInfo.delayPenalty.isValue);
-        assertEq(exitPenaltyInfo.delayPenalty.value, expectedPenalty);
+        assertTrue(exitPenaltyInfo.delayFee.isValue);
+        assertEq(exitPenaltyInfo.delayFee.value, expectedPenalty);
     }
 }

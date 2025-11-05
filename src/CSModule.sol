@@ -17,11 +17,13 @@ import { ICSAccounting } from "./interfaces/ICSAccounting.sol";
 import { ICSExitPenalties } from "./interfaces/ICSExitPenalties.sol";
 import { ICSModule, NodeOperator, NodeOperatorManagementProperties, ValidatorWithdrawalInfo } from "./interfaces/ICSModule.sol";
 import { ExitPenaltyInfo } from "./interfaces/ICSExitPenalties.sol";
+import { INodeOperatorOwner } from "./interfaces/INodeOperatorOwner.sol";
 
 import { PausableUntil } from "./lib/utils/PausableUntil.sol";
 import { QueueLib, Batch } from "./lib/QueueLib.sol";
 import { ValidatorCountsReport } from "./lib/ValidatorCountsReport.sol";
 import { NOAddresses } from "./lib/NOAddresses.sol";
+import { GeneralPenalty } from "./lib/GeneralPenaltyLib.sol";
 import { TransientUintUintMap, TransientUintUintMapLib } from "./lib/TransientUintUintMapLib.sol";
 import { SigningKeys } from "./lib/SigningKeys.sol";
 
@@ -38,16 +40,23 @@ contract CSModule is
     bytes32 public constant RESUME_ROLE = keccak256("RESUME_ROLE");
     bytes32 public constant STAKING_ROUTER_ROLE =
         keccak256("STAKING_ROUTER_ROLE");
-    bytes32 public constant REPORT_EL_REWARDS_STEALING_PENALTY_ROLE =
-        keccak256("REPORT_EL_REWARDS_STEALING_PENALTY_ROLE");
-    bytes32 public constant SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE =
-        keccak256("SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE");
+    // TODO: Revoke old role (REPORT_GENERAL_DELAYED_PENALTY_ROLE) and grant new role in the upgrade vote
+    bytes32 public constant REPORT_GENERAL_DELAYED_PENALTY_ROLE =
+        keccak256("REPORT_GENERAL_DELAYED_PENALTY_ROLE");
+    // TODO: Revoke old role (SETTLE_GENERAL_DELAYED_PENALTY_ROLE) and grant new role in the upgrade vote
+    bytes32 public constant SETTLE_GENERAL_DELAYED_PENALTY_ROLE =
+        keccak256("SETTLE_GENERAL_DELAYED_PENALTY_ROLE");
     bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
+    bytes32 public constant SUBMIT_WITHDRAWALS_ROLE =
+        keccak256("SUBMIT_WITHDRAWALS_ROLE");
     bytes32 public constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
     bytes32 public constant CREATE_NODE_OPERATOR_ROLE =
         keccak256("CREATE_NODE_OPERATOR_ROLE");
 
-    uint256 public constant DEPOSIT_SIZE = 32 ether;
+    uint256 public constant MIN_ACTIVATION_BALANCE = 32 ether;
+    uint256 public constant PENALTY_QUOTIENT = 32 ether;
+    uint256 public constant MAX_PENALTY_MULTIPLIER = 64;
+
     // @dev see IStakingModule.sol
     uint8 private constant FORCED_TARGET_LIMIT_MODE_ID = 2;
     // keccak256(abi.encode(uint256(keccak256("OPERATORS_CREATED_IN_TX_MAP_TSLOT")) - 1)) & ~bytes32(uint256(0xff))
@@ -64,8 +73,6 @@ contract CSModule is
 
     /// @dev QUEUE_LOWEST_PRIORITY identifies the range of available priorities: [0; QUEUE_LOWEST_PRIORITY].
     uint256 public immutable QUEUE_LOWEST_PRIORITY;
-    /// @dev QUEUE_LEGACY_PRIORITY is the priority for the CSM v1 queue.
-    uint256 public immutable QUEUE_LEGACY_PRIORITY;
 
     ////////////////////////
     // State variables below
@@ -76,7 +83,7 @@ contract CSModule is
     mapping(uint256 queuePriority => QueueLib.Queue queue)
         internal _queueByPriority;
 
-    /// @dev Legacy queue (priority=QUEUE_LEGACY_PRIORITY), that should be removed in the future once there are no more batches in it.
+    /// @dev Unused
     /// @custom:oz-renamed-from depositQueue
     QueueLib.Queue internal _legacyQueue;
 
@@ -84,18 +91,17 @@ contract CSModule is
     /// @custom:oz-renamed-from accounting
     ICSAccounting internal _accountingOld;
 
-    /// @dev Unused. Nullified in the finalizeUpgradeV2
+    /// @dev Unused. Nullified in v2 upgrade
     /// @custom:oz-renamed-from earlyAdoption
     address internal _earlyAdoption;
-    /// @dev deprecated. Nullified in the finalizeUpgradeV2
+    /// @dev deprecated. Nullified in v2 upgrade
     /// @custom:oz-renamed-from publicRelease
     bool internal _publicRelease;
 
     uint256 private _nonce;
-    mapping(uint256 => NodeOperator) private _nodeOperators;
+    mapping(uint256 => NodeOperator) internal _nodeOperators;
     /// @dev see _keyPointer function for details of noKeyIndexPacked structure
     mapping(uint256 noKeyIndexPacked => bool) private _isValidatorWithdrawn;
-    /// @dev DEPRECATED! No writes expected after CSM v2
     mapping(uint256 noKeyIndexPacked => bool) private _isValidatorSlashed;
 
     uint64 private _totalDepositedValidators;
@@ -131,10 +137,9 @@ contract CSModule is
         STETH = IStETH(LIDO_LOCATOR.lido());
         PARAMETERS_REGISTRY = ICSParametersRegistry(parametersRegistry);
         QUEUE_LOWEST_PRIORITY = PARAMETERS_REGISTRY.QUEUE_LOWEST_PRIORITY();
-        QUEUE_LEGACY_PRIORITY = PARAMETERS_REGISTRY.QUEUE_LEGACY_PRIORITY();
         ACCOUNTING = ICSAccounting(_accounting);
         EXIT_PENALTIES = ICSExitPenalties(exitPenalties);
-        FEE_DISTRIBUTOR = address(ACCOUNTING.feeDistributor());
+        FEE_DISTRIBUTOR = address(ACCOUNTING.FEE_DISTRIBUTOR());
 
         _disableInitializers();
     }
@@ -387,6 +392,7 @@ contract CSModule is
         STETH.transferShares(FEE_DISTRIBUTOR, totalShares);
     }
 
+    /// TODO: Figure out if we can remove the body of this function to save bytecode
     /// @inheritdoc IStakingModule
     function updateExitedValidatorsCount(
         bytes calldata nodeOperatorIds,
@@ -421,38 +427,8 @@ contract CSModule is
         uint256 targetLimitMode,
         uint256 targetLimit
     ) external onlyRole(STAKING_ROUTER_ROLE) {
-        if (targetLimitMode > FORCED_TARGET_LIMIT_MODE_ID) {
-            revert InvalidInput();
-        }
-        if (targetLimit > type(uint32).max) {
-            revert InvalidInput();
-        }
-        _onlyExistingNodeOperator(nodeOperatorId);
-        NodeOperator storage no = _nodeOperators[nodeOperatorId];
+        _setTargetLimit(nodeOperatorId, targetLimitMode, targetLimit);
 
-        if (targetLimitMode == 0) {
-            targetLimit = 0;
-        }
-
-        // NOTE: Bytecode saving trick; increased gas cost in rare cases is fine.
-        // if (
-        //     no.targetLimitMode == targetLimitMode &&
-        //     no.targetLimit == targetLimit
-        // ) {
-        //     return;
-        // }
-
-        // @dev No need to safe cast due to conditions above
-        no.targetLimitMode = uint8(targetLimitMode);
-        no.targetLimit = uint32(targetLimit);
-
-        emit TargetValidatorsCountChanged(
-            nodeOperatorId,
-            targetLimitMode,
-            targetLimit
-        );
-
-        // Nonce will be updated below even if depositable count was not changed
         _updateDepositableValidatorsCount({
             nodeOperatorId: nodeOperatorId,
             incrementNonceIfUpdated: false
@@ -468,6 +444,7 @@ contract CSModule is
         // Nothing to do, rewards are distributed by a performance oracle.
     }
 
+    /// TODO: Figure out if we can remove the body of this function to save bytecode
     /// @inheritdoc IStakingModule
     function unsafeUpdateValidatorsCount(
         uint256 nodeOperatorId,
@@ -542,6 +519,7 @@ contract CSModule is
         _onlyNodeOperatorManager(nodeOperatorId, msg.sender);
         NodeOperator storage no = _nodeOperators[nodeOperatorId];
 
+        // TODO: consider moving to a helper function
         if (startIndex < no.totalDepositedKeys) {
             revert SigningKeysInvalidOffset();
         }
@@ -561,8 +539,13 @@ contract CSModule is
         uint256 amountToCharge = PARAMETERS_REGISTRY.getKeyRemovalCharge(
             curveId
         ) * keysCount;
+        bool isFullyCharged = true;
+
         if (amountToCharge != 0) {
-            accounting().chargeFee(nodeOperatorId, amountToCharge);
+            isFullyCharged = accounting().chargeFee(
+                nodeOperatorId,
+                amountToCharge
+            );
             emit KeyRemovalChargeApplied(nodeOperatorId);
         }
 
@@ -573,6 +556,10 @@ contract CSModule is
         // @dev No need to safe cast due to checks in the func above
         no.totalVettedKeys = uint32(newTotalSigningKeys);
         emit VettedSigningKeysCountChanged(nodeOperatorId, newTotalSigningKeys);
+
+        if (!isFullyCharged) {
+            _onUncompensatedPenalty(nodeOperatorId);
+        }
 
         // Nonce is updated below due to keys state change
         _updateDepositableValidatorsCount({
@@ -591,153 +578,112 @@ contract CSModule is
     }
 
     /// @inheritdoc ICSModule
-    function migrateToPriorityQueue(uint256 nodeOperatorId) external {
-        NodeOperator storage no = _nodeOperators[nodeOperatorId];
-
-        if (no.usedPriorityQueue) {
-            revert PriorityQueueAlreadyUsed();
-        }
-
-        uint256 curveId = _getBondCurveId(nodeOperatorId);
-        (uint32 priority, uint32 maxDeposits) = PARAMETERS_REGISTRY
-            .getQueueConfig(curveId);
-
-        if (priority == QUEUE_LOWEST_PRIORITY) {
-            revert NotEligibleForPriorityQueue();
-        }
-
-        uint32 enqueued = no.enqueuedCount;
-        if (enqueued == 0) {
-            revert NoQueuedKeysToMigrate();
-        }
-
-        uint32 deposited = no.totalDepositedKeys;
-        if (maxDeposits <= deposited) {
-            revert PriorityQueueMaxDepositsUsed();
-        }
-
-        uint32 toMigrate = uint32(Math.min(enqueued, maxDeposits - deposited));
-        _enqueueNodeOperatorKeys(nodeOperatorId, priority, toMigrate);
-        no.usedPriorityQueue = true;
-        _incrementModuleNonce();
-
-        // An alternative version to fit into the bytecode requirements is below. Please consider
-        // the described caveat of the approach.
-
-        // NOTE: We allow a node operator (NO) to reset their enqueued counter to zero only once to
-        // migrate their keys from the legacy queue to a priority queue, if any. As a downside, the
-        // node operator effectively can have their seats doubled in the queue.
-        // Let's say we have a priority queue with a maximum of 10 deposits. Imagine a NO has 20
-        // keys queued in the legacy queue. Then, the NO calls this method and gets their enqueued
-        // counter reset to zero. As a result, the module will place 10 keys into the priority queue
-        // and 10 more keys at the end of the overall queue. The original batches are kept in the
-        // queue, so in total, the NO will have batches with 40 keys queued altogether.
-        // _nodeOperators[nodeOperatorId].enqueuedCount = 0;
-        // _enqueueNodeOperatorKeys(nodeOperatorId);
-    }
-
-    /// @inheritdoc ICSModule
-    function reportELRewardsStealingPenalty(
+    function reportGeneralDelayedPenalty(
         uint256 nodeOperatorId,
-        bytes32 blockHash,
-        uint256 amount
-    ) external onlyRole(REPORT_EL_REWARDS_STEALING_PENALTY_ROLE) {
+        bytes32 penaltyType,
+        uint256 amount,
+        string calldata details
+    ) external onlyRole(REPORT_GENERAL_DELAYED_PENALTY_ROLE) {
         _onlyExistingNodeOperator(nodeOperatorId);
-        if (amount == 0) {
-            revert InvalidAmount();
-        }
-
-        uint256 curveId = _getBondCurveId(nodeOperatorId);
-        uint256 additionalFine = PARAMETERS_REGISTRY
-            .getElRewardsStealingAdditionalFine(curveId);
-        accounting().lockBondETH(nodeOperatorId, amount + additionalFine);
-
-        emit ELRewardsStealingPenaltyReported(
+        GeneralPenalty.reportGeneralDelayedPenalty(
             nodeOperatorId,
-            blockHash,
-            amount
+            penaltyType,
+            amount,
+            details
         );
-
-        // Nonce should be updated if depositableValidators change
-        _updateDepositableValidatorsCount({
-            nodeOperatorId: nodeOperatorId,
-            incrementNonceIfUpdated: true
-        });
     }
 
     /// @inheritdoc ICSModule
-    function cancelELRewardsStealingPenalty(
+    function cancelGeneralDelayedPenalty(
         uint256 nodeOperatorId,
         uint256 amount
-    ) external onlyRole(REPORT_EL_REWARDS_STEALING_PENALTY_ROLE) {
+    ) external onlyRole(REPORT_GENERAL_DELAYED_PENALTY_ROLE) {
         _onlyExistingNodeOperator(nodeOperatorId);
-        accounting().releaseLockedBondETH(nodeOperatorId, amount);
-
-        emit ELRewardsStealingPenaltyCancelled(nodeOperatorId, amount);
-
-        // Nonce should be updated if depositableValidators change
-        _updateDepositableValidatorsCount({
-            nodeOperatorId: nodeOperatorId,
-            incrementNonceIfUpdated: true
-        });
+        GeneralPenalty.cancelGeneralDelayedPenalty(nodeOperatorId, amount);
     }
 
     /// @inheritdoc ICSModule
-    function settleELRewardsStealingPenalty(
-        uint256[] calldata nodeOperatorIds
-    ) external onlyRole(SETTLE_EL_REWARDS_STEALING_PENALTY_ROLE) {
-        ICSAccounting _accounting = accounting();
+    function settleGeneralDelayedPenalty(
+        uint256[] calldata nodeOperatorIds,
+        uint256[] calldata maxAmounts
+    ) external onlyRole(SETTLE_GENERAL_DELAYED_PENALTY_ROLE) {
+        if (nodeOperatorIds.length != maxAmounts.length) {
+            revert InvalidInput();
+        }
+
         for (uint256 i; i < nodeOperatorIds.length; ++i) {
             uint256 nodeOperatorId = nodeOperatorIds[i];
             _onlyExistingNodeOperator(nodeOperatorId);
 
-            // Settled amount might be zero either if the lock expired, or the bond is zero so we
-            // need to check if the penalty was applied.
-            bool applied = _accounting.settleLockedBondETH(nodeOperatorId);
-            if (applied) {
-                emit ELRewardsStealingPenaltySettled(nodeOperatorId);
+            bool settled = GeneralPenalty.settleGeneralDelayedPenalty(
+                nodeOperatorId,
+                maxAmounts[i]
+            );
 
-                // Nonce should be updated if depositableValidators change
-                _updateDepositableValidatorsCount({
-                    nodeOperatorId: nodeOperatorId,
-                    incrementNonceIfUpdated: true
-                });
-            }
+            if (!settled) continue;
+
+            _onUncompensatedPenalty(nodeOperatorId);
+
+            // Nonce should be updated if depositableValidators change
+            _updateDepositableValidatorsCount({
+                nodeOperatorId: nodeOperatorId,
+                incrementNonceIfUpdated: true
+            });
         }
     }
 
     /// @inheritdoc ICSModule
-    function compensateELRewardsStealingPenalty(
+    function compensateGeneralDelayedPenalty(
         uint256 nodeOperatorId
     ) external payable {
         _onlyNodeOperatorManager(nodeOperatorId, msg.sender);
-        accounting().compensateLockedBondETH{ value: msg.value }(
-            nodeOperatorId
-        );
-
-        emit ELRewardsStealingPenaltyCompensated(nodeOperatorId, msg.value);
-
-        // Nonce should be updated if depositableValidators change
-        _updateDepositableValidatorsCount({
-            nodeOperatorId: nodeOperatorId,
-            incrementNonceIfUpdated: true
-        });
+        GeneralPenalty.compensateGeneralDelayedPenalty(nodeOperatorId);
     }
 
     /// @inheritdoc ICSModule
+    function onValidatorSlashed(
+        uint256 nodeOperatorId,
+        uint256 keyIndex
+    ) external onlyRole(VERIFIER_ROLE) {
+        _onlyExistingNodeOperator(nodeOperatorId);
+        NodeOperator storage no = _nodeOperators[nodeOperatorId];
+        // TODO: consider moving to a helper function
+        if (keyIndex >= no.totalDepositedKeys) {
+            revert SigningKeysInvalidOffset();
+        }
+
+        uint256 pointer = _keyPointer(nodeOperatorId, keyIndex);
+        if (_isValidatorSlashed[pointer]) {
+            revert ValidatorSlashingAlreadyReported();
+        }
+        _isValidatorSlashed[pointer] = true;
+
+        bytes memory pubkey = SigningKeys.loadKeys(nodeOperatorId, keyIndex, 1);
+        emit ValidatorSlashingReported(nodeOperatorId, keyIndex, pubkey);
+    }
+
+    /// TODO: Consider moving to the external library to save bytecode
+    /// @inheritdoc ICSModule
     function submitWithdrawals(
         ValidatorWithdrawalInfo[] calldata withdrawalsInfo
-    ) external onlyRole(VERIFIER_ROLE) {
+    ) external onlyRole(SUBMIT_WITHDRAWALS_ROLE) {
         bool anySubmission = false;
 
         for (uint256 i; i < withdrawalsInfo.length; ++i) {
             ValidatorWithdrawalInfo memory withdrawalInfo = withdrawalsInfo[i];
+
+            // For slashed validator this value should reflect pre-slashing, hence non-zero balance.
+            // For non-slashed validator it will reflect the withdrawal amount, hence it cannot be zero either.
+            if (withdrawalInfo.exitBalance == 0) {
+                revert ZeroExitBalance();
+            }
 
             _onlyExistingNodeOperator(withdrawalInfo.nodeOperatorId);
             NodeOperator storage no = _nodeOperators[
                 withdrawalInfo.nodeOperatorId
             ];
 
+            // TODO: consider moving to a helper function
             if (withdrawalInfo.keyIndex >= no.totalDepositedKeys) {
                 revert SigningKeysInvalidOffset();
             }
@@ -750,6 +696,15 @@ contract CSModule is
                 continue;
             }
 
+            if (
+                withdrawalInfo.slashingPenalty > 0 &&
+                !_isValidatorSlashed[pointer]
+            ) {
+                revert SlashingPenaltyIsNotApplicable();
+            }
+
+            anySubmission = true;
+
             _isValidatorWithdrawn[pointer] = true;
             unchecked {
                 ++no.totalWithdrawnKeys;
@@ -761,56 +716,100 @@ contract CSModule is
                 1
             );
 
+            // solhint-disable-next-line func-named-parameters
             emit WithdrawalSubmitted(
                 withdrawalInfo.nodeOperatorId,
                 withdrawalInfo.keyIndex,
-                withdrawalInfo.amount,
+                withdrawalInfo.exitBalance,
+                withdrawalInfo.slashingPenalty,
                 pubkey
             );
-            anySubmission = true;
 
-            // It is safe to use unchecked for penalty sum because it's limited to uint248 in the structure.
+            // penaltyMultiplier is >= 1
+            uint256 penaltyMultiplier = Math.max(
+                withdrawalInfo.exitBalance,
+                MIN_ACTIVATION_BALANCE
+            ) / PENALTY_QUOTIENT;
+            // It's rather unlikely that the value will exceed 64 because anything above maximum effective balance of a
+            // validator will likely be withdrawn while it waits for a withdrawal. The introduced limit makes it
+            // possible to use unchecked blocks below and acts as an additional limiting factor.
+            penaltyMultiplier = Math.min(
+                MAX_PENALTY_MULTIPLIER,
+                penaltyMultiplier
+            );
+
+            ICSAccounting _accounting = accounting();
+            bool chargeWithdrawalRequestFee = false;
+
             uint256 penaltySum;
-            bool chargeWithdrawalRequestFee;
+            uint256 feeSum;
 
             ExitPenaltyInfo memory exitPenaltyInfo = EXIT_PENALTIES
                 .getExitPenaltyInfo(withdrawalInfo.nodeOperatorId, pubkey);
-            if (exitPenaltyInfo.delayPenalty.isValue) {
+            if (exitPenaltyInfo.delayFee.isValue) {
                 unchecked {
-                    penaltySum += exitPenaltyInfo.delayPenalty.value;
+                    feeSum = exitPenaltyInfo.delayFee.value * penaltyMultiplier;
                 }
                 chargeWithdrawalRequestFee = true;
             }
             if (exitPenaltyInfo.strikesPenalty.isValue) {
+                // It is safe to use unchecked for sum here because base penalties and fees are limited to uint248 in
+                // the MarkedUint248 structures used to store them, and the maximum multiplier is limited to 64, so
+                // `type(uint248).max * 64 < type(uint256).max`.
                 unchecked {
-                    penaltySum += exitPenaltyInfo.strikesPenalty.value;
+                    penaltySum =
+                        exitPenaltyInfo.strikesPenalty.value *
+                        penaltyMultiplier;
                 }
                 chargeWithdrawalRequestFee = true;
             }
 
-            ICSAccounting _accounting = accounting();
-
-            // The withdrawal request fee is taken only if the penalty is applied if no penalty, the
-            // fee has been paid by the node operator on the withdrawal trigger, or it is the DAO
-            // decision to withdraw the validator before that the withdrawal request becomes
-            // delayed.
+            // The withdrawal request fee is taken when either a delay was reported or the validator exited due to
+            // strikes. Otherwise, the fee has already been paid by the node operator upon withdrawal trigger, or it is
+            // a DAO decision to withdraw the validator before the withdrawal request becomes delayed.
             if (
                 chargeWithdrawalRequestFee &&
                 exitPenaltyInfo.withdrawalRequestFee.value != 0
             ) {
-                _accounting.chargeFee(
+                // type(uint248).max * (64 + 1) < type(uint256).max
+                unchecked {
+                    // Withdrawal request fee is not scaled because sending a withdrawal request for a validator does
+                    // not depend on the size of a validator.
+                    feeSum += exitPenaltyInfo.withdrawalRequestFee.value;
+                }
+            }
+
+            if (withdrawalInfo.slashingPenalty > 0) {
+                // Slashing penalty doesn't scale because all the losses are already accounted.
+                penaltySum += withdrawalInfo.slashingPenalty;
+            } else if (withdrawalInfo.exitBalance < MIN_ACTIVATION_BALANCE) {
+                // type(uint248).max * 64 + 32 * 10**18 < type(uint256).max
+                unchecked {
+                    penaltySum +=
+                        MIN_ACTIVATION_BALANCE -
+                        withdrawalInfo.exitBalance;
+                }
+            }
+
+            bool isFullyCoveredByBond = true;
+
+            if (feeSum > 0) {
+                isFullyCoveredByBond = _accounting.chargeFee(
                     withdrawalInfo.nodeOperatorId,
-                    exitPenaltyInfo.withdrawalRequestFee.value
+                    feeSum
                 );
             }
 
-            if (DEPOSIT_SIZE > withdrawalInfo.amount) {
-                unchecked {
-                    penaltySum += DEPOSIT_SIZE - withdrawalInfo.amount;
-                }
-            }
             if (penaltySum > 0) {
-                _accounting.penalize(withdrawalInfo.nodeOperatorId, penaltySum);
+                // We still call `penalize` even if there's no bond left, for the lock to be created.
+                isFullyCoveredByBond = _accounting.penalize(
+                    withdrawalInfo.nodeOperatorId,
+                    penaltySum
+                );
+            }
+
+            if (!isFullyCoveredByBond) {
+                _onUncompensatedPenalty(withdrawalInfo.nodeOperatorId);
             }
 
             // Nonce will be updated below even if depositable count was not changed
@@ -827,20 +826,23 @@ contract CSModule is
 
     /// @inheritdoc IStakingModule
     /// @dev Changing the WC means that the current deposit data in the queue is not valid anymore and can't be deposited.
-    ///      DSM will unvet current keys due to nonce change.
-    ///      The key removal charge should be reset to 0 manually by the DAO to allow Node Operators to remove the keys without any charge.
-    ///      After keys removal the DAO should set the new key removal charge.
+    ///      If there are depositable validators in the queue, the method should revert to prevent deposits with invalid
+    ///      withdrawal credentials.
     function onWithdrawalCredentialsChanged()
         external
+        view
         onlyRole(STAKING_ROUTER_ROLE)
     {
-        _incrementModuleNonce();
+        if (_depositableValidatorsCount > 0) {
+            revert DepositQueueHasUnsupportedWithdrawalCredentials();
+        }
     }
 
     /// @inheritdoc IStakingModule
     function reportValidatorExitDelay(
         uint256 nodeOperatorId,
-        uint256 /* proofSlotTimestamp */,
+        uint256,
+        /* proofSlotTimestamp */
         bytes calldata publicKey,
         uint256 eligibleToExitInSec
     ) external onlyRole(STAKING_ROUTER_ROLE) {
@@ -880,6 +882,7 @@ contract CSModule is
         bytes calldata /* depositCalldata */
     )
         external
+        virtual
         onlyRole(STAKING_ROUTER_ROLE)
         returns (bytes memory publicKeys, bytes memory signatures)
     {
@@ -900,7 +903,7 @@ contract CSModule is
                 break;
             }
 
-            queue = _getQueue(priority);
+            queue = _queueByPriority[priority];
             unchecked {
                 // Note: unused below
                 ++priority;
@@ -1023,7 +1026,7 @@ contract CSModule is
                 break;
             }
 
-            queue = _getQueue(priority);
+            queue = _queueByPriority[priority];
             unchecked {
                 ++priority;
             }
@@ -1076,7 +1079,7 @@ contract CSModule is
     function depositQueuePointers(
         uint256 queuePriority
     ) external view returns (uint128 head, uint128 tail) {
-        QueueLib.Queue storage q = _getQueue(queuePriority);
+        QueueLib.Queue storage q = _queueByPriority[queuePriority];
         return (q.head, q.tail);
     }
 
@@ -1085,7 +1088,15 @@ contract CSModule is
         uint256 queuePriority,
         uint128 index
     ) external view returns (Batch) {
-        return _getQueue(queuePriority).at(index);
+        return _queueByPriority[queuePriority].at(index);
+    }
+
+    /// @inheritdoc ICSModule
+    function isValidatorSlashed(
+        uint256 nodeOperatorId,
+        uint256 keyIndex
+    ) external view returns (bool) {
+        return _isValidatorSlashed[_keyPointer(nodeOperatorId, keyIndex)];
     }
 
     /// @inheritdoc ICSModule
@@ -1279,6 +1290,7 @@ contract CSModule is
         return nodeOperatorId < _nodeOperatorsCount;
     }
 
+    /// TODO: Figure out if we can simplify this method by returning sequential IDs only.
     /// @inheritdoc IStakingModule
     function getNodeOperatorIds(
         uint256 offset,
@@ -1301,7 +1313,8 @@ contract CSModule is
     /// @inheritdoc IStakingModule
     function isValidatorExitDelayPenaltyApplicable(
         uint256 nodeOperatorId,
-        uint256 /* proofSlotTimestamp */,
+        uint256,
+        /* proofSlotTimestamp */
         bytes calldata publicKey,
         uint256 eligibleToExitInSec
     ) external view returns (bool) {
@@ -1325,15 +1338,28 @@ contract CSModule is
             );
     }
 
+    /// TODO: Make this internal
     /// @dev This function is used to get the accounting contract from immutables to save bytecode and for backwards compatibility
     function accounting() public view returns (ICSAccounting) {
         return ACCOUNTING;
+    }
+
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view override(AccessControlEnumerableUpgradeable) returns (bool) {
+        return
+            interfaceId == type(INodeOperatorOwner).interfaceId ||
+            super.supportsInterface(interfaceId);
     }
 
     function _incrementModuleNonce() internal {
         unchecked {
             emit NonceChanged(++_nonce);
         }
+    }
+
+    function _onUncompensatedPenalty(uint256 nodeOperatorId) internal {
+        _setTargetLimit(nodeOperatorId, FORCED_TARGET_LIMIT_MODE_ID, 0);
     }
 
     function _addKeysAndUpdateDepositableValidatorsCount(
@@ -1396,6 +1422,7 @@ contract CSModule is
         _incrementModuleNonce();
     }
 
+    /// TODO: Figure out if we can remove this method
     /// @dev Update exited validators count for a single Node Operator
     /// @dev Allows decrease the count for unsafe updates
     function _updateExitedValidatorsCount(
@@ -1513,10 +1540,6 @@ contract CSModule is
 
                     _enqueueNodeOperatorKeys(nodeOperatorId, priority, count);
                     toEnqueue -= count;
-
-                    if (!no.usedPriorityQueue) {
-                        no.usedPriorityQueue = true;
-                    }
                 }
             }
         }
@@ -1538,7 +1561,7 @@ contract CSModule is
     ) internal {
         NodeOperator storage no = _nodeOperators[nodeOperatorId];
         no.enqueuedCount += count;
-        QueueLib.Queue storage q = _getQueue(queuePriority);
+        QueueLib.Queue storage q = _queueByPriority[queuePriority];
         q.enqueue(nodeOperatorId, count);
         emit BatchEnqueued(queuePriority, nodeOperatorId, count);
     }
@@ -1558,6 +1581,44 @@ contract CSModule is
         map.set(nodeOperatorId, 0);
     }
 
+    function _setTargetLimit(
+        uint256 nodeOperatorId,
+        uint256 targetLimitMode,
+        uint256 targetLimit
+    ) internal {
+        if (targetLimitMode > FORCED_TARGET_LIMIT_MODE_ID) {
+            revert InvalidInput();
+        }
+        if (targetLimit > type(uint32).max) {
+            revert InvalidInput();
+        }
+        _onlyExistingNodeOperator(nodeOperatorId);
+
+        if (targetLimitMode == 0) {
+            targetLimit = 0;
+        }
+
+        NodeOperator storage no = _nodeOperators[nodeOperatorId];
+
+        // NOTE: Bytecode saving trick; increased gas cost in rare cases is fine.
+        // if (
+        //     no.targetLimitMode == targetLimitMode &&
+        //     no.targetLimit == targetLimit
+        // ) {
+        //     return;
+        // }
+
+        // @dev No need to safe cast due to conditions above
+        no.targetLimitMode = uint8(targetLimitMode);
+        no.targetLimit = uint32(targetLimit);
+
+        emit TargetValidatorsCountChanged(
+            nodeOperatorId,
+            targetLimitMode,
+            targetLimit
+        );
+    }
+
     function _getOperatorCreator(
         uint256 nodeOperatorId
     ) internal view returns (address) {
@@ -1565,20 +1626,6 @@ contract CSModule is
             OPERATORS_CREATED_IN_TX_MAP_TSLOT
         );
         return address(uint160(map.get(nodeOperatorId)));
-    }
-
-    /// @dev Acts as a proxy to `_queueByPriority` till `_legacyQueue` deprecation.
-    /// @dev TODO: Remove the method in the next major release.
-    function _getQueue(
-        uint256 priority
-    ) internal view returns (QueueLib.Queue storage q) {
-        if (priority == QUEUE_LEGACY_PRIORITY) {
-            assembly {
-                q.slot := _legacyQueue.slot
-            }
-        } else {
-            q = _queueByPriority[priority];
-        }
     }
 
     function _checkCanAddKeys(

@@ -11,6 +11,7 @@ struct MarkedQueueConfig {
 
 contract CSParametersRegistryMock {
     uint256 public keyRemovalCharge = 0.01 ether;
+    uint256 public additionalFine = 0.1 ether;
 
     uint256 public keysLimit = 100_000;
 
@@ -20,10 +21,9 @@ contract CSParametersRegistryMock {
     uint256 public badPerformancePenalty = 0.01 ether;
 
     uint256 public QUEUE_LOWEST_PRIORITY = 5;
-    uint256 public QUEUE_LEGACY_PRIORITY = 4;
 
     uint256 public allowedExitDelay = 1 weeks;
-    uint256 public exitDelayPenalty = 0.1 ether;
+    uint256 public exitDelayFee = 0.1 ether;
     uint256 public maxWithdrawalRequestFee = 1 ether;
 
     mapping(uint256 curveId => MarkedQueueConfig) internal _queueConfigs;
@@ -51,10 +51,17 @@ contract CSParametersRegistryMock {
         keysLimit = limit;
     }
 
-    function getElRewardsStealingAdditionalFine(
+    function setGeneralDelayedPenaltyAdditionalFine(
+        uint256 /* curveId */,
+        uint256 fine
+    ) external {
+        additionalFine = fine;
+    }
+
+    function getGeneralDelayedPenaltyAdditionalFine(
         uint256 /* curveId */
-    ) external pure returns (uint256) {
-        return 0.1 ether;
+    ) external view returns (uint256) {
+        return additionalFine;
     }
 
     function getStrikesParams(
@@ -116,17 +123,14 @@ contract CSParametersRegistryMock {
         return allowedExitDelay;
     }
 
-    function getExitDelayPenalty(
+    function getExitDelayFee(
         uint256 /* curveId */
     ) external view returns (uint256) {
-        return exitDelayPenalty;
+        return exitDelayFee;
     }
 
-    function setExitDelayPenalty(
-        uint256 /* curveId */,
-        uint256 penalty
-    ) external {
-        exitDelayPenalty = penalty;
+    function setExitDelayFee(uint256 /* curveId */, uint256 fee) external {
+        exitDelayFee = fee;
     }
 
     function getMaxWithdrawalRequestFee(

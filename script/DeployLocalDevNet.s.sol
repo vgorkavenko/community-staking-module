@@ -65,13 +65,13 @@ contract DeployLocalDevNet is DeployBase {
         // Module
         config.stakingModuleId = vm.envUint("CSM_STAKING_MODULE_ID");
         config.moduleType = "community-onchain-v1"; // Just a unique type name to be used by the off-chain tooling
-        config.elRewardsStealingReporter = vm.envAddress(
+        config.generalDelayedPenaltyReporter = vm.envAddress(
             "CSM_FIRST_ADMIN_ADDRESS"
         ); // Dev team EOA
 
         // CSParameters
         config.defaultKeyRemovalCharge = 0.05 ether;
-        config.defaultElRewardsStealingAdditionalFine = 0.1 ether;
+        config.defaultGeneralDelayedPenaltyAdditionalFine = 0.1 ether;
         config.defaultKeysLimit = type(uint256).max;
         config.defaultAvgPerfLeewayBP = 450;
         config.defaultRewardShareBP = 10000;
@@ -84,9 +84,9 @@ contract DeployLocalDevNet is DeployBase {
         config.defaultAttestationsWeight = 54; // https://eth2book.info/capella/part2/incentives/rewards/
         config.defaultBlocksWeight = 8; // https://eth2book.info/capella/part2/incentives/rewards/
         config.defaultSyncWeight = 2; // https://eth2book.info/capella/part2/incentives/rewards/
-        config.defaultAllowedExitDelay = 4 days; // TODO: reconsider
-        config.defaultExitDelayPenalty = 0.1 ether; // TODO: to be reviewed
-        config.defaultMaxWithdrawalRequestFee = 0.1 ether; // TODO: to be reviewed
+        config.defaultAllowedExitDelay = 4 days;
+        config.defaultExitDelayFee = 0.1 ether;
+        config.defaultMaxWithdrawalRequestFee = 0.1 ether;
 
         // VettedGate
         config
@@ -108,7 +108,7 @@ contract DeployLocalDevNet is DeployBase {
         // TODO: Set proper values bellow
         config.identifiedCommunityStakersGateKeyRemovalCharge = 0.01 ether;
         config
-            .identifiedCommunityStakersGateELRewardsStealingAdditionalFine = 0.05 ether;
+            .identifiedCommunityStakersGateGeneralDelayedPenaltyAdditionalFine = 0.05 ether;
         config.identifiedCommunityStakersGateKeysLimit = type(uint248).max;
         config.identifiedCommunityStakersGateAvgPerfLeewayData.push([1, 500]);
         config.identifiedCommunityStakersGateRewardShareData.push([1, 10000]);
@@ -122,7 +122,7 @@ contract DeployLocalDevNet is DeployBase {
         config.identifiedCommunityStakersGateBlocksWeight = 4;
         config.identifiedCommunityStakersGateSyncWeight = 0;
         config.identifiedCommunityStakersGateAllowedExitDelay = 8 days;
-        config.identifiedCommunityStakersGateExitDelayPenalty = 0.05 ether;
+        config.identifiedCommunityStakersGateExitDelayFee = 0.05 ether;
         config
             .identifiedCommunityStakersGateMaxWithdrawalRequestFee = 0.05 ether;
 

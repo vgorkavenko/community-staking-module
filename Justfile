@@ -1,4 +1,6 @@
 set dotenv-load
+
+import? ".local.just"
 import "fork.just"
 
 chain := env_var_or_default("CHAIN", "mainnet")
@@ -45,6 +47,8 @@ anvil_host := env_var_or_default("ANVIL_IP_ADDR", "127.0.0.1")
 anvil_port := env_var_or_default("ANVIL_PORT", "8545")
 anvil_rpc_url := "http://" + anvil_host + ":" + anvil_port
 
+disable_code_size_limit := if env("DISABLE_CODE_SIZE_LIMIT", "") != "" { "--disable-code-size-limit" } else { "" }
+
 default: clean deps build test-all
 
 build *args:
@@ -75,7 +79,7 @@ test-all:
 
 # Run all unit tests
 test-unit *args:
-    forge test --no-match-path 'test/fork/*' -vvv {{args}}
+    forge test --skip script --no-match-path 'test/fork/*' -vvv {{args}}
 
 # Run all deployment tests that should be executed against full scratch deployment before the module activation vote
 test-deployment-full-scratch *args:
@@ -104,7 +108,12 @@ gas-report:
     import re
 
     command = "just test-unit --nmt 'testFuzz.+' --gas-report"
-    output = subprocess.check_output(command, shell=True, text=True)
+
+    try:
+        output = subprocess.check_output(command, shell=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(e.output)
+        raise
 
     lines = output.split('\n')
 
@@ -187,7 +196,7 @@ oz-upgrades:
 make-fork *args:
     @if pgrep -x "anvil" > /dev/null; \
         then just _warn "anvil process is already running in the background. Make sure it's connected to the right network and in the right state."; \
-        else anvil -f ${RPC_URL} --host {{anvil_host}} --port {{anvil_port}} --config-out localhost.json {{args}}; \
+        else anvil -f ${RPC_URL} --host {{anvil_host}} --port {{anvil_port}} --config-out localhost.json {{disable_code_size_limit}} {{args}}; \
     fi
 
 kill-fork:
@@ -262,7 +271,7 @@ test-upgrade *args:
 
     export RPC_URL={{anvil_rpc_url}}
 
-    just _deploy-impl --broadcast --private-key=`cat localhost.json | jq -r ".private_keys[0]"`
+    SKIP_LEGACY_QUEUE_CHECK=1 just _deploy-impl --broadcast --private-key=`cat localhost.json | jq -r ".private_keys[0]"`
 
     export DEPLOY_CONFIG=./artifacts/local/upgrade-{{chain}}.json
     export VOTE_PREV_BLOCK=`cast block-number -r $RPC_URL`
@@ -282,7 +291,7 @@ test-local *args:
 
     just make-fork --silent &
     while ! echo exit | nc {{anvil_host}} {{anvil_port}} > /dev/null; do sleep 1; done
-    just deploy --silent --private-key=`cat localhost.json | jq -r ".private_keys[0]"`
+    just deploy --silent --private-key=`cat localhost.json | jq -r ".private_keys[0]"` {{disable_code_size_limit}}
 
     export DEPLOY_CONFIG=./artifacts/local/deploy-{{chain}}.json
     export RPC_URL={{anvil_rpc_url}}
@@ -290,7 +299,7 @@ test-local *args:
     just vote-add-module
 
     just test-deployment-full-afterVote {{args}}
-    
+
     just test-integration {{args}}
 
     just kill-fork
@@ -302,7 +311,7 @@ test-full-deploy *args:
 
     just make-fork --silent &
     while ! echo exit | nc {{anvil_host}} {{anvil_port}} > /dev/null; do sleep 1; done
-    just deploy --private-key=`cat localhost.json | jq -r ".private_keys[0]"`
+    just deploy --private-key=`cat localhost.json | jq -r ".private_keys[0]"` {{disable_code_size_limit}} -vvv
 
     export DEPLOY_CONFIG=./artifacts/local/deploy-{{chain}}.json
     export RPC_URL={{anvil_rpc_url}}
@@ -321,7 +330,7 @@ test-v2-only-deploy *args:
 
     export RPC_URL={{anvil_rpc_url}}
 
-    just _deploy-impl --broadcast --private-key=`cat localhost.json | jq -r ".private_keys[0]"`
+    SKIP_LEGACY_QUEUE_CHECK=1 just _deploy-impl --broadcast --private-key=`cat localhost.json | jq -r ".private_keys[0]"` {{disable_code_size_limit}}
 
     export DEPLOY_CONFIG=./artifacts/local/upgrade-{{chain}}.json
 
@@ -331,4 +340,3 @@ test-v2-only-deploy *args:
 
 _warn message:
     @tput setaf 3 && printf "[WARNING]" && tput sgr0 && echo " {{message}}"
-
