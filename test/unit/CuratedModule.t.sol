@@ -164,7 +164,6 @@ contract CuratedInitialize is CuratedCommon {
             address(parametersRegistry)
         );
         assertEq(address(module.ACCOUNTING()), address(accounting));
-        assertEq(address(module.accounting()), address(accounting));
         assertEq(address(module.EXIT_PENALTIES()), address(exitPenalties));
     }
 
@@ -279,7 +278,14 @@ contract CuratedPauseAffectingTest is ModulePauseAffectingTest, CuratedCommon {}
 
 contract CuratedCreateNodeOperator is ModuleCreateNodeOperator, CuratedCommon {}
 
-//contract CuratedAddValidatorKeys is ModuleAddValidatorKeys, CuratedCommon {}
+// contract CuratedAddValidatorKeys is ModuleAddValidatorKeys, CuratedCommon {}
+// contract CuratedAddValidatorKeysViaGate is
+//     ModuleAddValidatorKeysViaGate,
+//     CuratedCommon
+// {
+//
+// }
+
 contract CuratedAddValidatorKeysNegative is
     ModuleAddValidatorKeysNegative,
     CuratedCommon
@@ -287,7 +293,7 @@ contract CuratedAddValidatorKeysNegative is
 
 }
 
-//contract CuratedObtainDepositData is ModuleObtainDepositData, CuratedCommon {}
+// contract CuratedObtainDepositData is ModuleObtainDepositData, CuratedCommon {}
 contract CuratedProposeNodeOperatorManagerAddressChange is
     ModuleProposeNodeOperatorManagerAddressChange,
     CuratedCommon
