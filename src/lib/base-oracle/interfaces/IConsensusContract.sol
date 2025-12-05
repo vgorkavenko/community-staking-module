@@ -3,6 +3,8 @@
 pragma solidity 0.8.24;
 
 interface IConsensusContract {
+    function MANAGE_FRAME_CONFIG_ROLE() external view returns (bytes32);
+
     function getIsMember(address addr) external view returns (bool);
 
     function getCurrentFrame()
@@ -19,5 +21,19 @@ interface IConsensusContract {
             uint256 genesisTime
         );
 
+    function getFrameConfig()
+        external
+        view
+        returns (
+            uint256 initialEpoch,
+            uint256 epochsPerFrame,
+            uint256 fastLaneLengthSlots
+        );
+
     function getInitialRefSlot() external view returns (uint256);
+
+    function setFrameConfig(
+        uint256 epochsPerFrame,
+        uint256 fastLaneLengthSlots
+    ) external;
 }
