@@ -43,7 +43,8 @@ contract CuratedModule is ICuratedModule, BaseModule {
 
     /// @inheritdoc IStakingModule
     function obtainDepositData(
-        uint256 /* depositsCount */,
+        uint256,
+        /* depositsCount */
         bytes calldata /* depositCalldata */
     )
         external
@@ -73,11 +74,13 @@ contract CuratedModule is ICuratedModule, BaseModule {
 
     /// @inheritdoc IStakingModuleV2
     function updateOperatorBalances(
-        bytes calldata,
+        uint256[] calldata,
         /* operatorIds */
-        bytes calldata,
-        /* balances */
-        uint256 /* refSlot */
+        uint256[] calldata,
+        /* validatorsBalancesGwei */
+        uint256[] calldata,
+        /* pendingBalancesGwei */
+        uint256 refSlot
     ) external {
         revert NotImplemented();
     }
@@ -127,5 +130,20 @@ contract CuratedModule is ICuratedModule, BaseModule {
         uint256 /* nodeOperatorId */
     ) internal override {
         //
+    }
+
+    /// @inheritdoc IStakingModule
+    function getStakingModuleSummary()
+        external
+        view
+        returns (
+            uint256 totalExitedValidators,
+            uint256 totalDepositedValidators,
+            uint256 depositableValidatorsCount
+        )
+    {
+        totalExitedValidators = _totalExitedValidators;
+        totalDepositedValidators = _totalDepositedValidators;
+        depositableValidatorsCount = _depositableValidatorsCount;
     }
 }

@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.33;
 
-import { TransientUintUintMap } from "./TransientUintUintMapLib.sol";
-import { NodeOperator } from "../interfaces/IBaseModule.sol";
-
 // Batch is an uint256 as it's the internal data type used by solidity.
 // Batch is a packed value, consisting of the following fields:
 //    - uint64  nodeOperatorId
@@ -92,20 +89,20 @@ function createBatch(
 }
 
 using { noId, keys, setKeys, setNext, next, isNil, unwrap } for Batch global;
-using QueueLib for QueueLib.Queue;
+using DepositQueueLib for DepositQueueLib.Queue;
 
 /// @dev Helps expose the errors to the ICSModule interface.
-interface IQueueLib {
-    error QueueIsEmpty();
-    error QueueLookupNoLimit();
+interface IDepositQueueLib {
+    error DepositQueueIsEmpty();
+    error DepositQueueLookupNoLimit();
 }
 
 /// @author madlabman
-library QueueLib {
+library DepositQueueLib {
     struct Queue {
         // Pointer to the item to be dequeued.
         uint128 head;
-        // Tracks the total number of batches ever enqueued.
+        // Tracks the index to enqueue an item to.
         uint128 tail;
         // Mapping saves a little in costs and allows easily fallback to a zeroed batch on out-of-bounds access.
         mapping(uint128 => Batch) queue;
@@ -114,76 +111,6 @@ library QueueLib {
     //////
     /// External methods
     //////
-
-    function clean(
-        Queue storage self,
-        mapping(uint256 => NodeOperator) storage nodeOperators,
-        uint256 maxItems,
-        TransientUintUintMap queueLookup
-    )
-        external
-        returns (
-            uint256 removed,
-            uint256 lastRemovedAtDepth,
-            uint256 visited,
-            bool reachedOutOfQueue
-        )
-    {
-        removed = 0;
-        lastRemovedAtDepth = 0;
-        visited = 0;
-        reachedOutOfQueue = false;
-
-        if (maxItems == 0) {
-            revert IQueueLib.QueueLookupNoLimit();
-        }
-
-        Batch prevItem;
-        uint128 indexOfPrev;
-
-        uint128 head = self.head;
-        uint128 curr = head;
-
-        while (visited < maxItems) {
-            Batch item = self.queue[curr];
-            if (item.isNil()) {
-                reachedOutOfQueue = true;
-                break;
-            }
-
-            visited++;
-
-            NodeOperator storage no = nodeOperators[item.noId()];
-            if (queueLookup.get(item.noId()) >= no.depositableValidatorsCount) {
-                // NOTE: Since we reached that point there's no way for a Node Operator to have a depositable batch
-                // later in the queue, and hence we don't update _queueLookup for the Node Operator.
-                if (curr == head) {
-                    self.dequeue();
-                    head = self.head;
-                } else {
-                    // There's no `prev` item while we call `dequeue`, and removing an item will keep the `prev` intact
-                    // other than changing its `next` field.
-                    prevItem = prevItem.setNext(item.next());
-                    self.queue[indexOfPrev] = prevItem;
-                }
-
-                // We assume that the invariant `enqueuedCount` >= `keys` is kept.
-                // NOTE: No need to safe cast due to internal logic.
-                no.enqueuedCount -= uint32(item.keys());
-
-                unchecked {
-                    lastRemovedAtDepth = visited;
-                    ++removed;
-                }
-            } else {
-                queueLookup.add(item.noId(), item.keys());
-                indexOfPrev = curr;
-                prevItem = item;
-            }
-
-            curr = item.next();
-        }
-    }
 
     /////
     /// Internal methods
@@ -216,7 +143,7 @@ library QueueLib {
         item = peek(self);
 
         if (item.isNil()) {
-            revert IQueueLib.QueueIsEmpty();
+            revert IDepositQueueLib.DepositQueueIsEmpty();
         }
 
         self.head = item.next();

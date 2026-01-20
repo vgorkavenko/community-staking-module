@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2025 Lido <info@lido.fi>
 // SPDX-License-Identifier: GPL-3.0
+
 pragma solidity 0.8.33;
 
 import { CuratedModule } from "src/CuratedModule.sol";
@@ -63,7 +64,7 @@ contract CuratedCommon is ModuleFixtures {
         accounting.setModule(module);
 
         _enableInitializers(address(module));
-        module.initialize({ admin: admin });
+        cm.initialize({ admin: admin });
 
         vm.startPrank(admin);
         {
@@ -348,7 +349,12 @@ contract CuratedRecoverERC20 is ModuleRecoverERC20, CuratedCommon {}
 
 contract CuratedSupportsInterface is ModuleSupportsInterface, CuratedCommon {}
 
-//contract CuratedMisc is ModuleMisc, CuratedCommon {}
+// contract CuratedMisc is ModuleMisc, CuratedCommon {
+//     function test_getInitializedVersion() public view {
+//         assertEq(module.getInitializedVersion(), 1);
+//     }
+// }
+
 contract CuratedExitDeadlineThreshold is
     ModuleExitDeadlineThreshold,
     CuratedCommon
