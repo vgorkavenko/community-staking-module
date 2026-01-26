@@ -154,6 +154,10 @@ contract ParametersRegistryDeploymentTest is DeploymentBaseTest {
             parametersRegistry.defaultMaxWithdrawalRequestFee(),
             deployParams.defaultMaxWithdrawalRequestFee
         );
+        assertEq(
+            parametersRegistry.defaultDepositAllocationWeight(),
+            deployParams.defaultDepositAllocationWeight
+        );
         assertEq(parametersRegistry.getInitializedVersion(), 1);
 
         // Params for Identified Community Staker type
@@ -286,6 +290,18 @@ contract ParametersRegistryDeploymentTest is DeploymentBaseTest {
             ),
             deployParams.identifiedCommunityStakersGateMaxWithdrawalRequestFee
         );
+        if (
+            deployParams
+                .identifiedCommunityStakersGateDepositAllocationWeight != 0
+        ) {
+            assertEq(
+                parametersRegistry.getDepositAllocationWeight(
+                    identifiedCommunityStakersGateCurveId
+                ),
+                deployParams
+                    .identifiedCommunityStakersGateDepositAllocationWeight
+            );
+        }
         // Params for Legacy EA type
         uint256 legacyEaBondCurveId = identifiedCommunityStakersGateCurveId - 1;
         assertEq(
@@ -406,7 +422,9 @@ contract ParametersRegistryDeploymentTest is DeploymentBaseTest {
                 defaultAllowedExitDelay: deployParams.defaultAllowedExitDelay,
                 defaultExitDelayFee: deployParams.defaultExitDelayFee,
                 defaultMaxWithdrawalRequestFee: deployParams
-                    .defaultMaxWithdrawalRequestFee
+                    .defaultMaxWithdrawalRequestFee,
+                defaultDepositAllocationWeight: deployParams
+                    .defaultDepositAllocationWeight
             })
         });
 
@@ -448,7 +466,9 @@ contract ParametersRegistryDeploymentTest is DeploymentBaseTest {
                 defaultAllowedExitDelay: deployParams.defaultAllowedExitDelay,
                 defaultExitDelayFee: deployParams.defaultExitDelayFee,
                 defaultMaxWithdrawalRequestFee: deployParams
-                    .defaultMaxWithdrawalRequestFee
+                    .defaultMaxWithdrawalRequestFee,
+                defaultDepositAllocationWeight: deployParams
+                    .defaultDepositAllocationWeight
             })
         });
     }

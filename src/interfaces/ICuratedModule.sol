@@ -8,12 +8,26 @@ import { IStakingModuleV2 } from "./IStakingModule.sol";
 
 interface ICuratedModule is IBaseModule, IStakingModuleV2 {
     error NotImplemented();
+    error PublicKeyIsWithdrawn();
+    error PublicKeyIsSlashed();
+    error PubkeyMismatch();
+
+    event NodeOperatorBalanceUpdated(
+        uint256 indexed operatorId,
+        uint256 balanceWei
+    );
 
     /// @notice Initializes the contract.
     /// @param admin An address to grant the DEFAULT_ADMIN_ROLE to.
     function initialize(address admin) external;
 
     function OPERATOR_ADDRESSES_ADMIN_ROLE() external view returns (bytes32);
+
+    /// @notice Returns stored operator balance (validators + pending).
+    /// @param operatorId ID of the Node Operator
+    function getNodeOperatorBalance(
+        uint256 operatorId
+    ) external view returns (uint256);
 
     /// @notice Change both reward and manager addresses of a node operator.
     /// @param nodeOperatorId ID of the Node Operator

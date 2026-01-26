@@ -240,7 +240,7 @@ contract CSModule is ICSModule, BaseModule {
     /// (i.e., the allocation to this key is below its top-up limit), the function reverts when additional keys are
     /// provided after this one.
     function obtainDepositData(
-        uint256 depositAmount,
+        uint256 maxDepositAmount,
         bytes calldata packedPubkeys,
         uint256[] calldata keyIndices,
         uint256[] calldata operatorIds,
@@ -260,7 +260,7 @@ contract CSModule is ICSModule, BaseModule {
         // solhint-disable-next-line func-named-parameters
         (publicKeys, allocations) = TopUpQueueOps.obtainDepositData(
             _topUpQueue(),
-            depositAmount,
+            maxDepositAmount,
             packedPubkeys,
             keyIndices,
             operatorIds,
@@ -401,9 +401,16 @@ contract CSModule is ICSModule, BaseModule {
         }
     }
 
-    function _onOperatorDepositableChange(
-        uint256 nodeOperatorId
+    function _applyDepositableValidatorsCount(
+        uint256 nodeOperatorId,
+        uint256 newCount,
+        bool incrementNonceIfUpdated
     ) internal override {
+        super._applyDepositableValidatorsCount(
+            nodeOperatorId,
+            newCount,
+            incrementNonceIfUpdated
+        );
         // solhint-disable-next-line func-named-parameters
         DepositQueueOps.enqueueNodeOperatorKeys(
             _nodeOperators,
