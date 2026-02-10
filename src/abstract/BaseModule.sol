@@ -162,7 +162,7 @@ abstract contract BaseModule is
         address from,
         NodeOperatorManagementProperties calldata managementProperties,
         address referrer
-    ) external whenResumed returns (uint256 nodeOperatorId) {
+    ) public virtual whenResumed returns (uint256 nodeOperatorId) {
         _checkCreateNodeOperatorRole();
         nodeOperatorId = _nodeOperatorsCount;
         OperatorTracker.recordCreator(nodeOperatorId);
@@ -951,7 +951,7 @@ abstract contract BaseModule is
     function _updateDepositableValidatorsCount(
         uint256 nodeOperatorId,
         bool incrementNonceIfUpdated
-    ) internal {
+    ) internal returns (bool changed) {
         NodeOperator storage no = _nodeOperators[nodeOperatorId];
 
         uint256 totalDepositedKeys = no.totalDepositedKeys;
@@ -984,12 +984,13 @@ abstract contract BaseModule is
                 }
             }
         }
-        _applyDepositableValidatorsCount({
-            no: no,
-            nodeOperatorId: nodeOperatorId,
-            newCount: newCount,
-            incrementNonceIfUpdated: incrementNonceIfUpdated
-        });
+        return
+            _applyDepositableValidatorsCount({
+                no: no,
+                nodeOperatorId: nodeOperatorId,
+                newCount: newCount,
+                incrementNonceIfUpdated: incrementNonceIfUpdated
+            });
     }
 
     function _applyDepositableValidatorsCount(
@@ -997,8 +998,8 @@ abstract contract BaseModule is
         uint256 nodeOperatorId,
         uint256 newCount,
         bool incrementNonceIfUpdated
-    ) internal virtual {
-        if (no.depositableValidatorsCount == newCount) return;
+    ) internal virtual returns (bool changed) {
+        if (no.depositableValidatorsCount == newCount) return false;
 
         // Updating the global counter.
         unchecked {
@@ -1016,6 +1017,8 @@ abstract contract BaseModule is
         if (incrementNonceIfUpdated) {
             _incrementModuleNonce();
         }
+
+        return true;
     }
 
     function _setTargetLimit(

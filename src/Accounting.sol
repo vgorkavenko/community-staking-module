@@ -186,7 +186,7 @@ contract Accounting is
     ) external onlyRole(SET_BOND_CURVE_ROLE) {
         _onlyExistingNodeOperator(nodeOperatorId);
         BondCurve._setBondCurve(nodeOperatorId, curveId);
-        MODULE.updateDepositableValidatorsCount(nodeOperatorId);
+        MODULE.onNodeOperatorBondCurveUpdated(nodeOperatorId);
     }
 
     /// @inheritdoc IAccounting

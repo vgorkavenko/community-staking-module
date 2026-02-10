@@ -19,7 +19,10 @@ contract ProxyUpgradesCurated is CuratedIntegrationBase {
             lidoLocator: address(module.LIDO_LOCATOR()),
             parametersRegistry: address(module.PARAMETERS_REGISTRY()),
             accounting: address(module.ACCOUNTING()),
-            exitPenalties: address(module.EXIT_PENALTIES())
+            exitPenalties: address(module.EXIT_PENALTIES()),
+            metaRegistry: address(
+                CuratedModule(address(module)).META_REGISTRY()
+            )
         });
         vm.prank(proxy.proxy__getAdmin());
         proxy.proxy__upgradeTo(address(newModule));
@@ -33,7 +36,10 @@ contract ProxyUpgradesCurated is CuratedIntegrationBase {
             lidoLocator: address(module.LIDO_LOCATOR()),
             parametersRegistry: address(module.PARAMETERS_REGISTRY()),
             accounting: address(module.ACCOUNTING()),
-            exitPenalties: address(module.EXIT_PENALTIES())
+            exitPenalties: address(module.EXIT_PENALTIES()),
+            metaRegistry: address(
+                CuratedModule(address(module)).META_REGISTRY()
+            )
         });
         address contractAdmin = module.getRoleMember(
             module.DEFAULT_ADMIN_ROLE(),

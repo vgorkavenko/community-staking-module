@@ -8,7 +8,6 @@ import { IAccessControlEnumerable } from "@openzeppelin/contracts/access/extensi
 import { IAssetRecovererLib } from "../lib/AssetRecovererLib.sol";
 import { INOAddresses } from "../lib/NOAddresses.sol";
 
-import { INodeOperatorOwner } from "./INodeOperatorOwner.sol";
 import { IAccounting } from "./IAccounting.sol";
 import { IExitPenalties } from "./IExitPenalties.sol";
 import { ILidoLocator } from "./ILidoLocator.sol";
@@ -60,8 +59,7 @@ interface IBaseModule is
     IStakingModule,
     IAccessControlEnumerable,
     INOAddresses,
-    IAssetRecovererLib,
-    INodeOperatorOwner
+    IAssetRecovererLib
 {
     event NodeOperatorAdded(
         uint256 indexed nodeOperatorId,
@@ -124,6 +122,7 @@ interface IBaseModule is
     error ValidatorSlashingAlreadyReported();
     error InvalidWithdrawnValidatorInfo();
 
+    error PubkeyMismatch();
     error InvalidAmount();
     error InvalidInput();
     error NotEnoughKeys();
@@ -352,6 +351,10 @@ interface IBaseModule is
     ///         - Depositable keys count should respect targetLimit value
     /// @param nodeOperatorId ID of the Node Operator
     function updateDepositableValidatorsCount(uint256 nodeOperatorId) external;
+
+    /// @notice Notify the module about a node operator bond curve update.
+    /// @param nodeOperatorId ID of the Node Operator
+    function onNodeOperatorBondCurveUpdated(uint256 nodeOperatorId) external;
 
     /// @notice Get Node Operator info
     /// @param nodeOperatorId ID of the Node Operator

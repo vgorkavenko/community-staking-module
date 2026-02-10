@@ -6,8 +6,9 @@ pragma solidity 0.8.33;
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { ICuratedModule } from "./interfaces/ICuratedModule.sol";
+import { IMetaRegistry } from "./interfaces/IMetaRegistry.sol";
 import { IStakingModule, IStakingModuleV2 } from "./interfaces/IStakingModule.sol";
-import { NodeOperator } from "./interfaces/IBaseModule.sol";
+import { IBaseModule, NodeOperator, NodeOperatorManagementProperties } from "./interfaces/IBaseModule.sol";
 
 import { BaseModule } from "./abstract/BaseModule.sol";
 
@@ -22,10 +23,14 @@ contract CuratedModule is ICuratedModule, BaseModule {
     struct CuratedModuleStorage {
         // Tracks per-operator balances (in wei) reported by the Accounting oracle.
         mapping(uint256 nodeOperatorId => uint256 balance) operatorBalances;
+        // Tracks how many operators left to update due to changes in weights.
+        uint256 upToDateOperatorWeightsCount;
     }
 
     bytes32 public constant OPERATOR_ADDRESSES_ADMIN_ROLE =
         keccak256("OPERATOR_ADDRESSES_ADMIN_ROLE");
+
+    IMetaRegistry public immutable META_REGISTRY;
 
     uint64 internal constant INITIALIZED_VERSION = 1;
     // keccak256(abi.encode(uint256(keccak256("CuratedModule")) - 1)) & ~bytes32(uint256(0xff))
@@ -37,7 +42,8 @@ contract CuratedModule is ICuratedModule, BaseModule {
         address lidoLocator,
         address parametersRegistry,
         address accounting,
-        address exitPenalties
+        address exitPenalties,
+        address metaRegistry
     )
         BaseModule(
             moduleType,
@@ -46,7 +52,13 @@ contract CuratedModule is ICuratedModule, BaseModule {
             accounting,
             exitPenalties
         )
-    {}
+    {
+        if (metaRegistry == address(0)) {
+            revert ZeroMetaRegistryAddress();
+        }
+
+        META_REGISTRY = IMetaRegistry(metaRegistry);
+    }
 
     /// @dev Initialize contract from scratch. In case of a method call frontrun, the contract instance should be discarded.
     ///      It is recommended to call this method in the same transaction as the deployment transaction
@@ -63,11 +75,13 @@ contract CuratedModule is ICuratedModule, BaseModule {
         bytes calldata /* depositCalldata */
     ) external returns (bytes memory publicKeys, bytes memory signatures) {
         _checkStakingRouterRole();
+        _requireNodeOperatorWeightsUpToDate();
+
         (
             uint256 allocated,
             uint256[] memory operatorIds,
             uint256[] memory allocations
-        ) = CuratedDepositAllocator.allocateDeposits(
+        ) = CuratedDepositAllocator.allocateInitialDeposits(
                 _nodeOperators,
                 _nodeOperatorsCount,
                 depositsCount
@@ -134,6 +148,8 @@ contract CuratedModule is ICuratedModule, BaseModule {
         uint256[] calldata topUpLimits
     ) external returns (uint256[] memory allocations) {
         _checkStakingRouterRole();
+        _requireNodeOperatorWeightsUpToDate();
+
         if (maxDepositAmount == 0) {
             return new uint256[](0);
         }
@@ -188,11 +204,40 @@ contract CuratedModule is ICuratedModule, BaseModule {
                 revert NodeOperatorDoesNotExist();
             }
 
-            uint256 balanceWei = (validatorsBalancesGwei[i] +
-                pendingBalancesGwei[i]) * 1 gwei;
-            _setOperatorBalance($, operatorId, balanceWei);
+            _setOperatorBalance(
+                $,
+                operatorId,
+                (validatorsBalancesGwei[i] + pendingBalancesGwei[i]) * 1 gwei
+            );
         }
         _incrementModuleNonce();
+    }
+
+    /// @inheritdoc ICuratedModule
+    function getOperatorWeights(
+        uint256[] calldata operatorIds
+    ) external view returns (uint256[] memory operatorWeights) {
+        _requireNodeOperatorWeightsUpToDate();
+        return _metaRegistry().getOperatorWeights(operatorIds);
+    }
+
+    /// @inheritdoc IBaseModule
+    function createNodeOperator(
+        address from,
+        NodeOperatorManagementProperties calldata managementProperties,
+        address referrer
+    ) public override(IBaseModule, BaseModule) whenResumed returns (uint256) {
+        CuratedModuleStorage storage $ = _storage();
+        if ($.upToDateOperatorWeightsCount == _nodeOperatorsCount) {
+            // NOTE: Unconditionally increase the counter because the new operator will have zero weight, hence do not
+            // affect the allocation. The operator should be added to a group eventually and it will trigger the full
+            // weights refresh routine.
+            unchecked {
+                ++$.upToDateOperatorWeightsCount;
+            }
+        }
+
+        return super.createNodeOperator(from, managementProperties, referrer);
     }
 
     /// @inheritdoc ICuratedModule
@@ -208,6 +253,87 @@ contract CuratedModule is ICuratedModule, BaseModule {
             newManagerAddress,
             newRewardAddress
         );
+    }
+
+    // TODO: Rename to updateNodeOperatorWeightAndDepositableValidatorsCount
+    /// @inheritdoc IBaseModule
+    /// @dev This one is called in `Accounting.setBondCurve`.
+    function onNodeOperatorBondCurveUpdated(
+        uint256 nodeOperatorId
+    ) external override(IBaseModule) {
+        _metaRegistry().refreshOperatorWeight(nodeOperatorId);
+        _updateDepositableValidatorsCount({
+            nodeOperatorId: nodeOperatorId,
+            incrementNonceIfUpdated: true
+        });
+    }
+
+    /// @inheritdoc ICuratedModule
+    function onNodeOperatorWeightChange(
+        uint256 nodeOperatorId,
+        uint256 newWeight
+    ) external {
+        if (msg.sender != address(_metaRegistry())) {
+            revert SenderIsNotMetaRegistry();
+        }
+
+        if (newWeight == 0) {
+            _applyDepositableValidatorsCount({
+                no: _nodeOperators[nodeOperatorId],
+                nodeOperatorId: nodeOperatorId,
+                newCount: 0,
+                incrementNonceIfUpdated: false
+            });
+        }
+
+        // NOTE: We always increment the nonce since weight change might affect the expected deposit allocation.
+        _incrementModuleNonce();
+    }
+
+    /// @inheritdoc ICuratedModule
+    function requestFullOperatorWeightsUpdate() external {
+        if (msg.sender != address(_metaRegistry())) {
+            revert SenderIsNotMetaRegistry();
+        }
+
+        _storage().upToDateOperatorWeightsCount = 0;
+        _incrementModuleNonce();
+    }
+
+    /// @inheritdoc ICuratedModule
+    function batchUpdateNodeOperatorWeights(
+        uint256 maxCount
+    ) external override returns (uint256 operatorsLeft) {
+        if (maxCount == 0) {
+            revert InvalidMaxCount();
+        }
+
+        CuratedModuleStorage storage $ = _storage();
+        uint256 operatorsCount = _nodeOperatorsCount;
+        uint256 noId = $.upToDateOperatorWeightsCount;
+        if (noId == operatorsCount) {
+            return 0;
+        }
+
+        uint256 limit = Math.min(noId + maxCount, operatorsCount);
+
+        for (; noId < limit; ++noId) {
+            _metaRegistry().refreshOperatorWeight(noId);
+        }
+
+        $.upToDateOperatorWeightsCount = limit;
+        operatorsLeft = operatorsCount - limit;
+
+        if (operatorsLeft == 0) emit NodeOperatorWeightsUpToDate();
+    }
+
+    /// @inheritdoc ICuratedModule
+    function getNodeOperatorWeightsToUpdateCount()
+        external
+        view
+        returns (uint256)
+    {
+        return _nodeOperatorsCount - _storage().upToDateOperatorWeightsCount;
     }
 
     /// @inheritdoc ICuratedModule
@@ -229,6 +355,8 @@ contract CuratedModule is ICuratedModule, BaseModule {
             uint256[] memory allocations
         )
     {
+        _requireNodeOperatorWeightsUpToDate();
+
         uint256 operatorsCount = _nodeOperatorsCount;
         if (maxDepositAmount == 0 || operatorsCount == 0) {
             return (0, new uint256[](0), new uint256[](0));
@@ -254,22 +382,28 @@ contract CuratedModule is ICuratedModule, BaseModule {
         uint256 nodeOperatorId,
         uint256 newCount,
         bool incrementNonceIfUpdated
-    ) internal override {
+    ) internal override returns (bool depositableChanged) {
         if (newCount > 0) {
-            if (
-                PARAMETERS_REGISTRY.getDepositAllocationWeight(
-                    _getBondCurveId(nodeOperatorId)
-                ) == 0
-            ) {
+            uint256 weight = _metaRegistry().getNodeOperatorWeight(
+                nodeOperatorId
+            );
+            if (weight == 0) {
                 newCount = 0;
             }
         }
-        super._applyDepositableValidatorsCount(
-            no,
-            nodeOperatorId,
-            newCount,
-            incrementNonceIfUpdated
-        );
+
+        depositableChanged = super._applyDepositableValidatorsCount({
+            no: no,
+            nodeOperatorId: nodeOperatorId,
+            newCount: newCount,
+            incrementNonceIfUpdated: incrementNonceIfUpdated
+        });
+    }
+
+    function _requireNodeOperatorWeightsUpToDate() internal view {
+        if (_storage().upToDateOperatorWeightsCount != _nodeOperatorsCount) {
+            revert NodeOperatorWeightsUpdateInProgress();
+        }
     }
 
     function _validateTopUpPublicKeys(
@@ -315,13 +449,14 @@ contract CuratedModule is ICuratedModule, BaseModule {
         // TODO: Add capped top-up limits like in CSM
 
         uint256[] memory perOperatorIncrements;
-        (allocations, perOperatorIncrements) = _distributeTopUpAllocations({
-            operatorIds: operatorIds,
-            topUpLimits: topUpLimits,
-            allocatedOperatorIds: allocatedOperatorIds,
-            operatorAllocations: operatorAllocations,
-            operatorsCount: _nodeOperatorsCount
-        });
+        (allocations, perOperatorIncrements) = NodeOperatorOps
+            .distributeTopUpAllocations({
+                operatorIds: operatorIds,
+                topUpLimits: topUpLimits,
+                allocatedOperatorIds: allocatedOperatorIds,
+                operatorAllocations: operatorAllocations,
+                operatorsCount: _nodeOperatorsCount
+            });
 
         NodeOperatorOps.increaseKeyAddedBalancesByAllocations(
             _keyAddedBalances,
@@ -358,51 +493,6 @@ contract CuratedModule is ICuratedModule, BaseModule {
         }
     }
 
-    /// @dev Distribute per-operator allocations to per-key allocations with per-key limits.
-    function _distributeTopUpAllocations(
-        uint256[] calldata operatorIds,
-        uint256[] calldata topUpLimits,
-        uint256[] memory allocatedOperatorIds,
-        uint256[] memory operatorAllocations,
-        uint256 operatorsCount
-    )
-        internal
-        returns (
-            uint256[] memory allocations,
-            uint256[] memory perOperatorIncrements
-        )
-    {
-        // topUpLimits are per-key and aligned with operatorIds/keyIndices order.
-        allocations = new uint256[](operatorIds.length);
-        // NOTE: Use a full operatorsCount-sized array for O(1) lookups; operator counts are small enough
-        // that a compact map would add overhead and can be worse overall.
-        uint256[] memory perOperatorAllocations = new uint256[](operatorsCount);
-        for (uint256 i; i < allocatedOperatorIds.length; ++i) {
-            perOperatorAllocations[
-                allocatedOperatorIds[i]
-            ] = operatorAllocations[i];
-        }
-
-        perOperatorIncrements = new uint256[](operatorsCount);
-        unchecked {
-            for (uint256 i; i < operatorIds.length; ++i) {
-                uint256 operatorId = operatorIds[i];
-                uint256 remaining = perOperatorAllocations[operatorId] -
-                    perOperatorIncrements[operatorId];
-                if (remaining == 0) continue;
-
-                uint256 limit = CuratedDepositAllocator.quantizeForTopUp(
-                    topUpLimits[i]
-                );
-                if (limit == 0) continue;
-
-                uint256 amount = Math.min(remaining, limit);
-                allocations[i] = amount;
-                perOperatorIncrements[operatorId] += amount;
-            }
-        }
-    }
-
     function _increaseOperatorBalancesByAllocations(
         uint256[] memory uniqueOperatorIds,
         uint256[] memory perOperatorIncrements
@@ -435,6 +525,10 @@ contract CuratedModule is ICuratedModule, BaseModule {
     ) internal {
         $.operatorBalances[operatorId] = balanceWei;
         emit NodeOperatorBalanceUpdated(operatorId, balanceWei);
+    }
+
+    function _metaRegistry() internal view returns (IMetaRegistry) {
+        return META_REGISTRY;
     }
 
     function _storage() internal pure returns (CuratedModuleStorage storage $) {

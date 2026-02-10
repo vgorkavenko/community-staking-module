@@ -10,6 +10,7 @@ import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/I
 import { CuratedDeployParams, CuratedGateConfig, GateCurveParams } from "script/curated/DeployBase.s.sol";
 import { CuratedGate } from "src/CuratedGate.sol";
 import { ICuratedModule } from "src/interfaces/ICuratedModule.sol";
+import { IMetaRegistry } from "src/interfaces/IMetaRegistry.sol";
 import { IParametersRegistry } from "src/interfaces/IParametersRegistry.sol";
 import { OssifiableProxy } from "src/lib/proxy/OssifiableProxy.sol";
 
@@ -73,28 +74,35 @@ contract ModuleDeploymentTest is DeploymentBaseTest {
     }
 }
 
-contract OperatorsDataDeploymentTest is DeploymentBaseTest {
+contract MetaRegistryDeploymentTest is DeploymentBaseTest {
+    function test_state_onlyFull() public view {
+        assertEq(metaRegistry.getOperatorGroupsCount(), 1);
+
+        IMetaRegistry.OperatorGroup memory groupInfo = metaRegistry
+            .getOperatorGroup(metaRegistry.NO_GROUP_ID());
+        assertEq(groupInfo.subNodeOperators.length, 0);
+        assertEq(groupInfo.externalOperators.length, 0);
+    }
+
     function test_roles_onlyFull() public view {
         assertEq(
-            operatorsData.getRoleMemberCount(
-                operatorsData.DEFAULT_ADMIN_ROLE()
-            ),
+            metaRegistry.getRoleMemberCount(metaRegistry.DEFAULT_ADMIN_ROLE()),
             adminsCount
         );
         assertTrue(
-            operatorsData.hasRole(
-                operatorsData.DEFAULT_ADMIN_ROLE(),
+            metaRegistry.hasRole(
+                metaRegistry.DEFAULT_ADMIN_ROLE(),
                 deployParams.aragonAgent
             )
         );
 
-        bytes32 setterRole = operatorsData.SETTER_ROLE();
+        bytes32 setterRole = metaRegistry.SET_OPERATOR_INFO_ROLE();
         uint256 gatesCount = curatedGates.length;
-        assertEq(operatorsData.getRoleMemberCount(setterRole), gatesCount);
+        assertEq(metaRegistry.getRoleMemberCount(setterRole), gatesCount);
         for (uint256 i = 0; i < gatesCount; ++i) {
             assertTrue(
-                operatorsData.hasRole(setterRole, curatedGates[i]),
-                "gate missing operatorsData setter role"
+                metaRegistry.hasRole(setterRole, curatedGates[i]),
+                "gate missing metaRegistry setter role"
             );
         }
     }
@@ -110,8 +118,7 @@ contract CuratedGatesDeploymentTest is DeploymentBaseTest {
 
             assertEq(address(gate.MODULE()), address(module));
             assertEq(address(gate.ACCOUNTING()), address(accounting));
-            assertEq(address(gate.OPERATORS_DATA()), address(operatorsData));
-            assertEq(gate.MODULE_ID(), deployParams.stakingModuleId);
+            assertEq(address(gate.META_REGISTRY()), address(metaRegistry));
         }
     }
 
@@ -132,10 +139,6 @@ contract CuratedGatesDeploymentTest is DeploymentBaseTest {
     function test_curveParameters() public view {
         uint256 gatesCount = curatedGates.length;
         assertGt(gatesCount, 0, "no curated gates deployed");
-        assertEq(
-            parametersRegistry.defaultDepositAllocationWeight(),
-            deployParams.defaultDepositAllocationWeight
-        );
         for (uint256 i = 0; i < gatesCount; ++i) {
             CuratedGate gate = CuratedGate(curatedGates[i]);
             uint256 curveId = gate.curveId();
@@ -282,19 +285,8 @@ contract CuratedGatesDeploymentTest is DeploymentBaseTest {
                 params.maxElWithdrawalRequestFee
             );
 
-            if (params.depositAllocationWeight != 0) {
-                assertEq(
-                    parametersRegistry.getDepositAllocationWeight(curveId),
-                    params.depositAllocationWeight,
-                    "gate deposit allocation weight"
-                );
-            } else {
-                assertEq(
-                    parametersRegistry.getDepositAllocationWeight(curveId),
-                    deployParams.defaultDepositAllocationWeight,
-                    "gate deposit allocation weight default"
-                );
-            }
+            // FIXME: add MetaRegistry-level assertions here to replace
+            // the removed deposit-allocation-weight checks.
         }
     }
 

@@ -13,7 +13,7 @@ import { ICuratedModule } from "./interfaces/ICuratedModule.sol";
 import { IMerkleGate } from "./interfaces/IMerkleGate.sol";
 import { ICuratedGate } from "./interfaces/ICuratedGate.sol";
 import { NodeOperatorManagementProperties } from "./interfaces/IBaseModule.sol";
-import { IOperatorsData, OperatorInfo } from "./interfaces/IOperatorsData.sol";
+import { IMetaRegistry, OperatorMetadata } from "./interfaces/IMetaRegistry.sol";
 import { IAccounting } from "./interfaces/IAccounting.sol";
 
 /// @notice Merkle gate for Curated Module v2
@@ -32,13 +32,10 @@ contract CuratedGate is
     ICuratedModule public immutable MODULE;
 
     /// @inheritdoc ICuratedGate
-    uint256 public immutable MODULE_ID;
-
-    /// @inheritdoc ICuratedGate
     IAccounting public immutable ACCOUNTING;
 
     /// @inheritdoc ICuratedGate
-    IOperatorsData public immutable OPERATORS_DATA;
+    IMetaRegistry public immutable META_REGISTRY;
 
     /// @inheritdoc IMerkleGate
     bytes32 public treeRoot;
@@ -54,14 +51,15 @@ contract CuratedGate is
     /// @dev Tracks whether an address already consumed its eligibility
     mapping(address => bool) internal _consumedAddresses;
 
-    constructor(address module, uint256 moduleId, address operatorsData) {
-        if (module == address(0)) revert ZeroModuleAddress();
-        if (moduleId == 0) revert ZeroModuleId();
-        if (operatorsData == address(0)) revert ZeroOperatorsDataAddress();
+    constructor(address module) {
+        if (module == address(0)) {
+            revert ZeroModuleAddress();
+        }
+
         MODULE = ICuratedModule(module);
-        MODULE_ID = moduleId;
         ACCOUNTING = MODULE.ACCOUNTING();
-        OPERATORS_DATA = IOperatorsData(operatorsData);
+        META_REGISTRY = MODULE.META_REGISTRY();
+
         _disableInitializers();
     }
 
@@ -125,13 +123,13 @@ contract CuratedGate is
         }
 
         // Persist metadata in separate storage
-        OperatorInfo memory metadata = OperatorInfo({
+        OperatorMetadata memory metadata = OperatorMetadata({
             name: name,
             description: description,
             ownerEditsRestricted: false
         });
 
-        OPERATORS_DATA.set(MODULE_ID, nodeOperatorId, metadata);
+        META_REGISTRY.setOperatorMetadataAsAdmin(nodeOperatorId, metadata);
     }
 
     /// @inheritdoc IMerkleGate
@@ -179,8 +177,9 @@ contract CuratedGate is
         if (_treeRoot == bytes32(0)) revert InvalidTreeRoot();
         if (_treeRoot == treeRoot) revert InvalidTreeRoot();
         if (bytes(_treeCid).length == 0) revert InvalidTreeCid();
-        if (keccak256(bytes(_treeCid)) == keccak256(bytes(treeCid)))
+        if (keccak256(bytes(_treeCid)) == keccak256(bytes(treeCid))) {
             revert InvalidTreeCid();
+        }
         treeRoot = _treeRoot;
         treeCid = _treeCid;
         emit TreeSet(_treeRoot, _treeCid);

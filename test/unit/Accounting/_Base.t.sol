@@ -97,6 +97,19 @@ contract AccountingFixtures is Test, Fixtures, Utilities, InvariantAsserts {
         );
     }
 
+    function mock_onNodeOperatorBondCurveUpdated(
+        uint256 nodeOperatorId
+    ) internal {
+        vm.mockCall(
+            address(stakingModule),
+            abi.encodeWithSelector(
+                IBaseModule.onNodeOperatorBondCurveUpdated.selector,
+                nodeOperatorId
+            ),
+            ""
+        );
+    }
+
     function mock_getNodeOperatorOwner(address owner) internal {
         vm.mockCall(
             address(stakingModule),
@@ -152,6 +165,7 @@ contract BaseTest is AccountingFixtures {
 
         stakingModule = new Stub();
         mock_updateDepositableValidatorsCount();
+        mock_onNodeOperatorBondCurveUpdated(0);
 
         IBondCurve.BondCurveIntervalInput[]
             memory curve = new IBondCurve.BondCurveIntervalInput[](1);

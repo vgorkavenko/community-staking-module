@@ -397,6 +397,16 @@ contract CSModule is ICSModule, BaseModule {
         // NOTE: The function does nothing in CSM, see the docstring.
     }
 
+    /// @inheritdoc IBaseModule
+    function onNodeOperatorBondCurveUpdated(
+        uint256 nodeOperatorId
+    ) external override(IBaseModule) {
+        _updateDepositableValidatorsCount({
+            nodeOperatorId: nodeOperatorId,
+            incrementNonceIfUpdated: true
+        });
+    }
+
     /// @inheritdoc IStakingModule
     function getStakingModuleSummary()
         external
@@ -469,8 +479,8 @@ contract CSModule is ICSModule, BaseModule {
         uint256 nodeOperatorId,
         uint256 newCount,
         bool incrementNonceIfUpdated
-    ) internal override {
-        super._applyDepositableValidatorsCount(
+    ) internal override returns (bool changed) {
+        changed = super._applyDepositableValidatorsCount(
             no,
             nodeOperatorId,
             newCount,

@@ -31,8 +31,6 @@ contract ParametersRegistry is
         keccak256("MANAGE_REWARD_SHARE_ROLE");
     bytes32 public constant MANAGE_VALIDATOR_EXIT_PARAMETERS_ROLE =
         keccak256("MANAGE_VALIDATOR_EXIT_PARAMETERS_ROLE");
-    bytes32 public constant MANAGE_ALLOCATION_WEIGHTS_ROLE =
-        keccak256("MANAGE_ALLOCATION_WEIGHTS_ROLE");
 
     /// @dev Maximal value for basis points (BP)
     ///      1 BP = 0.01%
@@ -92,10 +90,6 @@ contract ParametersRegistry is
     uint256 public defaultMaxElWithdrawalRequestFee;
     mapping(uint256 => MarkedUint248) internal _maxElWithdrawalRequestFees;
 
-    uint256 public defaultDepositAllocationWeight;
-    mapping(uint256 curveId => MarkedUint248)
-        internal _depositAllocationWeights;
-
     modifier onlyRoleMemberOrAdmin(bytes32 role) {
         _onlyRoleMemberOrAdmin(role);
         _;
@@ -141,7 +135,6 @@ contract ParametersRegistry is
             data.defaultBlocksWeight,
             data.defaultSyncWeight
         );
-        _setDefaultDepositAllocationWeight(data.defaultDepositAllocationWeight);
         _setDefaultQueueConfig(
             data.defaultQueuePriority,
             data.defaultQueueMaxDeposits
@@ -260,12 +253,6 @@ contract ParametersRegistry is
     }
 
     /// @inheritdoc IParametersRegistry
-    function setDefaultDepositAllocationWeight(
-        uint256 weight
-    ) external onlyRoleMemberOrAdmin(MANAGE_ALLOCATION_WEIGHTS_ROLE) {
-        _setDefaultDepositAllocationWeight(weight);
-    }
-
     ////////////////////////////////////////////////////////////////////////////////
     // Setters for per-curve parameters
     ////////////////////////////////////////////////////////////////////////////////
@@ -439,18 +426,6 @@ contract ParametersRegistry is
         emit MaxElWithdrawalRequestFeeSet(curveId, fee);
     }
 
-    /// @inheritdoc IParametersRegistry
-    function setDepositAllocationWeight(
-        uint256 curveId,
-        uint256 weight
-    ) external onlyRoleMemberOrAdmin(MANAGE_ALLOCATION_WEIGHTS_ROLE) {
-        _depositAllocationWeights[curveId] = MarkedUint248(
-            weight.toUint248(),
-            true
-        );
-        emit DepositAllocationWeightSet(curveId, weight);
-    }
-
     ////////////////////////////////////////////////////////////////////////////////
     // Unsetters for per-curve parameters
     ////////////////////////////////////////////////////////////////////////////////
@@ -555,14 +530,6 @@ contract ParametersRegistry is
     ) external onlyRoleMemberOrAdmin(MANAGE_VALIDATOR_EXIT_PARAMETERS_ROLE) {
         delete _maxElWithdrawalRequestFees[curveId];
         emit MaxElWithdrawalRequestFeeUnset(curveId);
-    }
-
-    /// @inheritdoc IParametersRegistry
-    function unsetDepositAllocationWeight(
-        uint256 curveId
-    ) external onlyRoleMemberOrAdmin(MANAGE_ALLOCATION_WEIGHTS_ROLE) {
-        delete _depositAllocationWeights[curveId];
-        emit DepositAllocationWeightUnset(curveId);
     }
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -718,14 +685,6 @@ contract ParametersRegistry is
     }
 
     /// @inheritdoc IParametersRegistry
-    function getDepositAllocationWeight(
-        uint256 curveId
-    ) external view returns (uint256 weight) {
-        MarkedUint248 memory data = _depositAllocationWeights[curveId];
-        return data.isValue ? data.value : defaultDepositAllocationWeight;
-    }
-
-    /// @inheritdoc IParametersRegistry
     function getInitializedVersion() external view returns (uint64) {
         return _getInitializedVersion();
     }
@@ -834,11 +793,6 @@ contract ParametersRegistry is
     function _setDefaultMaxElWithdrawalRequestFee(uint256 fee) internal {
         defaultMaxElWithdrawalRequestFee = fee;
         emit DefaultMaxElWithdrawalRequestFeeSet(fee);
-    }
-
-    function _setDefaultDepositAllocationWeight(uint256 weight) internal {
-        defaultDepositAllocationWeight = weight;
-        emit DefaultDepositAllocationWeightSet(weight);
     }
 
     function _onlyRoleMemberOrAdmin(bytes32 role) internal view {

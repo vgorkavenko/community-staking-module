@@ -16,7 +16,7 @@ import { FeeOracle } from "../../src/FeeOracle.sol";
 import { Verifier } from "../../src/Verifier.sol";
 import { ParametersRegistry } from "../../src/ParametersRegistry.sol";
 import { ExitPenalties } from "../../src/ExitPenalties.sol";
-import { OperatorsData } from "../../src/OperatorsData.sol";
+import { MetaRegistry } from "../../src/MetaRegistry.sol";
 import { CuratedGate } from "../../src/CuratedGate.sol";
 import { CuratedGateFactory } from "../../src/CuratedGateFactory.sol";
 
@@ -51,7 +51,6 @@ struct GateCurveParams {
     uint256 allowedExitDelay;
     uint256 exitDelayFee;
     uint256 maxElWithdrawalRequestFee;
-    uint256 depositAllocationWeight;
 }
 
 struct CuratedGateConfig {
@@ -115,8 +114,6 @@ struct CuratedDeployParams {
     uint256 defaultAllowedExitDelay;
     uint256 defaultExitDelayFee;
     uint256 defaultMaxElWithdrawalRequestFee;
-    uint256 defaultDepositAllocationWeight;
-    uint256 identifiedCommunityStakersGateDepositAllocationWeight;
     // Curated gates
     CuratedGateConfig[] curatedGates;
     // GateSeal
@@ -149,7 +146,7 @@ abstract contract DeployBase is Script {
     Verifier public verifier;
     HashConsensus public hashConsensus;
     ParametersRegistry public parametersRegistry;
-    OperatorsData public operatorsData;
+    MetaRegistry public metaRegistry;
     CuratedGateFactory public curatedGateFactory;
     address[] public curatedGateInstances;
     address internal curatedGateImpl;
@@ -218,8 +215,10 @@ abstract contract DeployBase is Script {
             );
 
             accounting = Accounting(_deployProxy(deployer, address(dummyImpl)));
-
             oracle = FeeOracle(_deployProxy(deployer, address(dummyImpl)));
+            metaRegistry = MetaRegistry(
+                _deployProxy(deployer, address(dummyImpl))
+            );
 
             FeeDistributor feeDistributorImpl = new FeeDistributor({
                 stETH: locator.lido(),
@@ -277,9 +276,7 @@ abstract contract DeployBase is Script {
                     defaultAllowedExitDelay: config.defaultAllowedExitDelay,
                     defaultExitDelayFee: config.defaultExitDelayFee,
                     defaultMaxElWithdrawalRequestFee: config
-                        .defaultMaxElWithdrawalRequestFee,
-                    defaultDepositAllocationWeight: config
-                        .defaultDepositAllocationWeight
+                        .defaultMaxElWithdrawalRequestFee
                 })
             });
 
@@ -386,12 +383,6 @@ abstract contract DeployBase is Script {
                     curveId,
                     params.maxElWithdrawalRequestFee
                 );
-                if (params.depositAllocationWeight != 0) {
-                    parametersRegistry.setDepositAllocationWeight(
-                        curveId,
-                        params.depositAllocationWeight
-                    );
-                }
             }
             accounting.revokeRole(
                 accounting.MANAGE_BOND_CURVES_ROLE(),
@@ -407,7 +398,8 @@ abstract contract DeployBase is Script {
                 lidoLocator: config.lidoLocatorAddress,
                 parametersRegistry: address(parametersRegistry),
                 accounting: address(accounting),
-                exitPenalties: address(exitPenalties)
+                exitPenalties: address(exitPenalties),
+                metaRegistry: address(metaRegistry)
             });
 
             {
@@ -419,6 +411,19 @@ abstract contract DeployBase is Script {
             }
 
             curatedModule.initialize({ admin: deployer });
+
+            MetaRegistry metaRegistryImpl = new MetaRegistry(
+                address(curatedModule)
+            );
+
+            {
+                OssifiableProxy metaRegistryProxy = OssifiableProxy(
+                    payable(address(metaRegistry))
+                );
+                metaRegistryProxy.proxy__upgradeTo(address(metaRegistryImpl));
+                metaRegistryProxy.proxy__changeAdmin(config.proxyAdmin);
+            }
+            metaRegistry.initialize({ admin: deployer });
 
             ValidatorStrikes strikesImpl = new ValidatorStrikes({
                 module: address(curatedModule),
@@ -454,21 +459,7 @@ abstract contract DeployBase is Script {
 
             strikes.initialize(deployer, address(ejector));
 
-            address operatorsDataImpl = address(
-                new OperatorsData(locator.stakingRouter())
-            );
-            operatorsData = OperatorsData(
-                _deployProxy(config.proxyAdmin, operatorsDataImpl)
-            );
-            operatorsData.initialize(deployer);
-
-            curatedGateImpl = address(
-                new CuratedGate(
-                    address(curatedModule),
-                    config.stakingModuleId,
-                    address(operatorsData)
-                )
-            );
+            curatedGateImpl = address(new CuratedGate(address(curatedModule)));
 
             curatedGateFactory = new CuratedGateFactory(curatedGateImpl);
 
@@ -638,12 +629,12 @@ abstract contract DeployBase is Script {
                 gate.revokeRole(gate.DEFAULT_ADMIN_ROLE(), deployer);
             }
 
-            operatorsData.grantRole(
-                operatorsData.DEFAULT_ADMIN_ROLE(),
+            metaRegistry.grantRole(
+                metaRegistry.DEFAULT_ADMIN_ROLE(),
                 config.aragonAgent
             );
-            operatorsData.revokeRole(
-                operatorsData.DEFAULT_ADMIN_ROLE(),
+            metaRegistry.revokeRole(
+                metaRegistry.DEFAULT_ADMIN_ROLE(),
                 deployer
             );
 
@@ -687,6 +678,8 @@ abstract contract DeployBase is Script {
             deployJson.set("ChainId", chainId);
             deployJson.set("CuratedModule", address(curatedModule));
             deployJson.set("CuratedModuleImpl", address(curatedModuleImpl));
+            deployJson.set("MetaRegistry", address(metaRegistry));
+            deployJson.set("MetaRegistryImpl", address(metaRegistryImpl));
             deployJson.set("ParametersRegistry", address(parametersRegistry));
             deployJson.set(
                 "ParametersRegistryImpl",
@@ -705,8 +698,6 @@ abstract contract DeployBase is Script {
             deployJson.set("ValidatorStrikesImpl", address(strikesImpl));
             deployJson.set("HashConsensus", address(hashConsensus));
             deployJson.set("Verifier", address(verifier));
-            deployJson.set("OperatorsData", address(operatorsData));
-            deployJson.set("OperatorsDataImpl", address(operatorsDataImpl));
             deployJson.set("CuratedGateFactory", address(curatedGateFactory));
             deployJson.set("CuratedGates", curatedGateInstances);
             deployJson.set("LidoLocator", config.lidoLocatorAddress);
@@ -766,7 +757,10 @@ abstract contract DeployBase is Script {
                     address(gate)
                 );
             }
-            operatorsData.grantRole(operatorsData.SETTER_ROLE(), address(gate));
+            metaRegistry.grantRole(
+                metaRegistry.SET_OPERATOR_INFO_ROLE(),
+                address(gate)
+            );
             gate.grantRole(gate.PAUSE_ROLE(), config.resealManager);
             gate.grantRole(gate.RESUME_ROLE(), config.resealManager);
             gate.grantRole(
@@ -847,8 +841,8 @@ abstract contract DeployBase is Script {
             parametersRegistry.DEFAULT_ADMIN_ROLE(),
             config.secondAdminAddress
         );
-        operatorsData.grantRole(
-            operatorsData.DEFAULT_ADMIN_ROLE(),
+        metaRegistry.grantRole(
+            metaRegistry.DEFAULT_ADMIN_ROLE(),
             config.secondAdminAddress
         );
         for (uint256 i = 0; i < curatedGateInstances.length; i++) {

@@ -27,7 +27,9 @@ import { ExitPenalties } from "src/ExitPenalties.sol";
 import { ValidatorStrikes } from "src/ValidatorStrikes.sol";
 import { Verifier } from "src/Verifier.sol";
 import { CuratedModule } from "src/CuratedModule.sol";
-import { OperatorsData } from "src/OperatorsData.sol";
+import { MetaRegistry } from "src/MetaRegistry.sol";
+import { IMetaRegistry } from "src/interfaces/IMetaRegistry.sol";
+import { ICuratedModule } from "src/interfaces/ICuratedModule.sol";
 import { CuratedGate } from "src/CuratedGate.sol";
 import { CuratedGateFactory } from "src/CuratedGateFactory.sol";
 import { DeployParams } from "script/csm/DeployBase.s.sol";
@@ -45,8 +47,9 @@ import { WstETHMock } from "./mocks/WstETHMock.sol";
 import { LidoLocatorMock } from "./mocks/LidoLocatorMock.sol";
 import { BurnerMock } from "./mocks/BurnerMock.sol";
 import { WithdrawalQueueMock } from "./mocks/WithdrawalQueueMock.sol";
-import { Stub } from "./mocks/Stub.sol";
+import { StakingRouterMock } from "./mocks/StakingRouterMock.sol";
 import { TWGMock } from "./mocks/TWGMock.sol";
+import { Stub } from "./mocks/Stub.sol";
 
 contract Fixtures is StdCheats, Test {
     bytes32 public constant INITIALIZABLE_STORAGE =
@@ -72,7 +75,7 @@ contract Fixtures is StdCheats, Test {
         wstETH = new WstETHMock(address(stETH));
         wq = new WithdrawalQueueMock(address(wstETH), address(stETH));
         Stub treasury = new Stub();
-        Stub stakingRouter = new Stub();
+        StakingRouterMock stakingRouter = new StakingRouterMock();
         TWGMock twg = new TWGMock();
         locator = new LidoLocatorMock(
             address(stETH),
@@ -123,8 +126,6 @@ contract DeploymentHelpers is Test {
         uint256 stakingModuleId;
         bytes32 moduleType;
         uint256 queueLowestPriority;
-        uint256 defaultDepositAllocationWeight;
-        uint256 identifiedCommunityStakersGateDepositAllocationWeight;
         uint256 bondLockPeriod;
         uint256 minBondLockPeriod;
         uint256 maxBondLockPeriod;
@@ -197,8 +198,8 @@ contract DeploymentHelpers is Test {
         address strikesImpl;
         address verifier;
         address hashConsensus;
-        address operatorsData;
-        address operatorsDataImpl;
+        address metaRegistry;
+        address metaRegistryImpl;
         address curatedGateFactory;
         address[] curatedGates;
         address gateSeal;
@@ -482,17 +483,17 @@ contract DeploymentHelpers is Test {
         );
         vm.label(deploymentConfig.hashConsensus, "curatedHashConsensus");
 
-        deploymentConfig.operatorsData = vm.parseJsonAddress(
+        deploymentConfig.metaRegistry = vm.parseJsonAddress(
             config,
-            ".OperatorsData"
+            ".MetaRegistry"
         );
-        vm.label(deploymentConfig.operatorsData, "operatorsData");
+        vm.label(deploymentConfig.metaRegistry, "metaRegistry");
 
-        deploymentConfig.operatorsDataImpl = vm.parseJsonAddress(
+        deploymentConfig.metaRegistryImpl = vm.parseJsonAddress(
             config,
-            ".OperatorsDataImpl"
+            ".MetaRegistryImpl"
         );
-        vm.label(deploymentConfig.operatorsDataImpl, "operatorsDataImpl");
+        vm.label(deploymentConfig.metaRegistryImpl, "metaRegistryImpl");
 
         deploymentConfig.curatedGateFactory = vm.parseJsonAddress(
             config,
@@ -614,9 +615,6 @@ contract DeploymentHelpers is Test {
         dst.defaultExitDelayFee = src.defaultExitDelayFee;
         dst.defaultMaxElWithdrawalRequestFee = src
             .defaultMaxElWithdrawalRequestFee;
-        dst.defaultDepositAllocationWeight = src.defaultDepositAllocationWeight;
-        dst.identifiedCommunityStakersGateDepositAllocationWeight = src
-            .identifiedCommunityStakersGateDepositAllocationWeight;
 
         // Curated gates
         for (uint256 i; i < src.curatedGates.length; ++i) {
@@ -729,11 +727,6 @@ contract DeploymentHelpers is Test {
                 .verifierFirstSupportedSlot;
             params.capellaSlot = decoded.capellaSlot;
             params.defaultBondCurve = decoded.defaultBondCurve;
-            params.defaultDepositAllocationWeight = decoded
-                .defaultDepositAllocationWeight;
-            params
-                .identifiedCommunityStakersGateDepositAllocationWeight = decoded
-                .identifiedCommunityStakersGateDepositAllocationWeight;
         }
     }
 
@@ -781,7 +774,7 @@ abstract contract DeploymentFixturesBase is StdCheats, DeploymentHelpers {
     IBurner public burner;
     CuratedModule public curatedModule;
     CuratedModule public curatedModuleImpl;
-    OperatorsData public operatorsData;
+    MetaRegistry public metaRegistry;
     CuratedGateFactory public curatedGateFactory;
     address[] public curatedGates;
 
@@ -898,7 +891,7 @@ abstract contract DeploymentFixturesBase is StdCheats, DeploymentHelpers {
         gateSeal = IGateSeal(deploymentConfig.gateSeal);
         burner = IBurner(locator.burner());
 
-        operatorsData = OperatorsData(deploymentConfig.operatorsData);
+        metaRegistry = MetaRegistry(deploymentConfig.metaRegistry);
         curatedGateFactory = CuratedGateFactory(
             deploymentConfig.curatedGateFactory
         );
@@ -1143,7 +1136,6 @@ contract CSMIntegrationHelpers is ForkIntegrationHelpersBase {
 }
 
 contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
-    ParametersRegistry internal parametersRegistry;
     address[] internal curatedGates;
 
     error ModuleNotFound();
@@ -1152,10 +1144,8 @@ contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
         CSModule module_,
         Accounting accounting_,
         IStakingRouter stakingRouter_,
-        ParametersRegistry parametersRegistry_,
         address[] memory curatedGates_
     ) ForkIntegrationHelpersBase(module_, accounting_, stakingRouter_) {
-        parametersRegistry = parametersRegistry_;
         curatedGates = curatedGates_;
     }
 
@@ -1167,7 +1157,6 @@ contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
             keysCount
         );
         (CuratedGate gate, bytes32[] memory proof) = _prepareCuratedGate(from);
-        _ensureDepositAllocationWeight(gate.curveId());
 
         vm.prank(from);
         nodeOperatorId = gate.createNodeOperator(
@@ -1177,6 +1166,8 @@ contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
             address(0),
             proof
         );
+
+        _ensureMetaRegistrySetup(nodeOperatorId, gate.curveId());
 
         uint256 amount = accounting.getBondAmountByKeysCount(
             keysCount,
@@ -1210,6 +1201,9 @@ contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
             });
 
         nodeOperatorId = module.createNodeOperator(from, props, address(0));
+
+        uint256 curveId = accounting.getBondCurveId(nodeOperatorId);
+        _ensureMetaRegistrySetup(nodeOperatorId, curveId);
 
         address managerAddress = manager == address(0) ? from : manager;
         (bytes memory keys, bytes memory signatures) = keysSignatures(
@@ -1277,17 +1271,48 @@ contract CuratedIntegrationHelpers is ForkIntegrationHelpersBase {
         proof = tree.getProof(0);
     }
 
-    function _ensureDepositAllocationWeight(uint256 curveId) internal {
-        if (parametersRegistry.getDepositAllocationWeight(curveId) != 0) {
-            return;
+    function _ensureMetaRegistrySetup(
+        uint256 nodeOperatorId,
+        uint256 curveId
+    ) internal {
+        MetaRegistry r = MetaRegistry(
+            address(ICuratedModule(address(module)).META_REGISTRY())
+        );
+
+        address admin = r.getRoleMember(r.DEFAULT_ADMIN_ROLE(), 0);
+
+        vm.startPrank(admin);
+        r.grantRole(r.MANAGE_OPERATOR_GROUPS_ROLE(), address(this));
+        r.grantRole(r.SET_BOND_CURVE_WEIGHT_ROLE(), address(this));
+        vm.stopPrank();
+
+        // TODO: Think about more realistic weight, so far the units are unclear.
+        if (r.getBondCurveWeight(curveId) == 0) {
+            r.setBondCurveWeight(curveId, 1);
         }
 
-        address admin = parametersRegistry.getRoleMember(
-            parametersRegistry.DEFAULT_ADMIN_ROLE(),
-            0
-        );
-        vm.prank(admin);
-        parametersRegistry.setDepositAllocationWeight(curveId, 1);
+        uint256 groupId = r.getNodeOperatorGroupId(nodeOperatorId);
+        if (groupId == r.NO_GROUP_ID()) {
+            IMetaRegistry.SubNodeOperator[]
+                memory subs = new IMetaRegistry.SubNodeOperator[](1);
+            subs[0] = IMetaRegistry.SubNodeOperator({
+                nodeOperatorId: uint64(nodeOperatorId),
+                share: 10000
+            });
+            r.createOrUpdateOperatorGroup(
+                r.NO_GROUP_ID(),
+                IMetaRegistry.OperatorGroup({
+                    subNodeOperators: subs,
+                    externalOperators: new IMetaRegistry.ExternalOperator[](0)
+                })
+            );
+        }
+
+        CuratedModule cm = CuratedModule(address(module));
+        uint256 left = cm.getNodeOperatorWeightsToUpdateCount();
+        if (left > 0) {
+            cm.batchUpdateNodeOperatorWeights(left);
+        }
     }
 
     function _ensureCreateNodeOperatorRole() internal {

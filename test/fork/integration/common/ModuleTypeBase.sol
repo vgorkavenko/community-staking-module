@@ -54,7 +54,6 @@ abstract contract CuratedIntegrationBase is ModuleTypeBase {
             module,
             accounting,
             stakingRouter,
-            parametersRegistry,
             curatedGates
         );
     }

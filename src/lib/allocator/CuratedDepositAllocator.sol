@@ -4,11 +4,11 @@
 pragma solidity 0.8.33;
 
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
-import { IAccounting } from "../../interfaces/IAccounting.sol";
-import { IBaseModule } from "../../interfaces/IBaseModule.sol";
-import { IParametersRegistry } from "../../interfaces/IParametersRegistry.sol";
+import { ICuratedModule } from "../../interfaces/ICuratedModule.sol";
+import { IMetaRegistry } from "../../interfaces/IMetaRegistry.sol";
 import { NodeOperator } from "../../interfaces/IBaseModule.sol";
 import { AllocationState, DepositAllocatorGreedy } from "./DepositAllocatorGreedy.sol";
+import { WithdrawnValidatorLib } from "../WithdrawnValidatorLib.sol";
 
 /// @notice Curated deposit allocation helpers (external library for bytecode savings).
 /// @dev Invariants assumed by this library:
@@ -17,6 +17,7 @@ import { AllocationState, DepositAllocatorGreedy } from "./DepositAllocatorGreed
 library CuratedDepositAllocator {
     uint256 public constant MAX_EFFECTIVE_BALANCE = 2048 ether;
     uint256 public constant MIN_ACTIVATION_BALANCE = 32 ether;
+
     struct DepositableOperatorsData {
         // Per-operator allocation shares scaled by DepositAllocatorGreedy.S_SCALE (2^96).
         // During collection this temporarily stores raw weights and is normalized in-place
@@ -49,7 +50,7 @@ library CuratedDepositAllocator {
     /// @return allocated Number of deposits actually allocated.
     /// @return operatorIds Operator ids for allocated operators.
     /// @return allocations Per-operator allocations aligned to operatorIds.
-    function allocateDeposits(
+    function allocateInitialDeposits(
         mapping(uint256 => NodeOperator) storage nodeOperators,
         uint256 operatorsCount,
         uint256 depositsCount
@@ -233,9 +234,8 @@ library CuratedDepositAllocator {
         data.capacities = new uint256[](operatorsCount);
         data.operatorIds = new uint256[](operatorsCount);
 
-        IParametersRegistry parametersRegistry = IBaseModule(address(this))
-            .PARAMETERS_REGISTRY();
-        IAccounting accounting = IBaseModule(address(this)).ACCOUNTING();
+        IMetaRegistry metaRegistry = ICuratedModule(address(this))
+            .META_REGISTRY();
 
         uint256 eligibleCount;
         unchecked {
@@ -244,12 +244,20 @@ library CuratedDepositAllocator {
                 uint256 capacity = no.depositableValidatorsCount;
                 if (capacity == 0) continue;
 
-                uint256 weight = parametersRegistry.getDepositAllocationWeight(
-                    accounting.getBondCurveId(i)
-                );
+                (uint256 weight, uint256 externalStake) = metaRegistry
+                    .getNodeOperatorWeightAndExternalStake(i);
                 if (weight == 0) continue;
 
+                // NOTE: To determine the count of validators a node operator would have in the module we calculate
+                // allocation for, we divide the external stake by the maximum stake a validator might have in this
+                // module. Since the CuratedModule supports 0x02 validators, the maximum value is MAX_EFFECTIVE_BALANCE.
                 uint256 current = no.totalDepositedKeys - no.totalWithdrawnKeys;
+                if (externalStake > 0) {
+                    current +=
+                        externalStake /
+                        WithdrawnValidatorLib.MAX_EFFECTIVE_BALANCE;
+                }
+
                 data.sharesX96[eligibleCount] = weight;
                 data.currents[eligibleCount] = current;
                 data.capacities[eligibleCount] = capacity;
@@ -280,11 +288,13 @@ library CuratedDepositAllocator {
 
         uint256[] memory weightsByOperatorId;
         uint256[] memory capacitiesByOperatorId;
+        uint256[] memory currentStakeByOperatorId;
         (
             data.weightSum,
             data.totalCurrent,
             weightsByOperatorId,
-            capacitiesByOperatorId
+            capacitiesByOperatorId,
+            currentStakeByOperatorId
         ) = _collectTopUpGlobalBaseline({
             nodeOperators: nodeOperators,
             nodeOperatorBalances: nodeOperatorBalances,
@@ -303,7 +313,7 @@ library CuratedDepositAllocator {
             if (weight == 0) continue;
 
             data.sharesX96[eligibleCount] = weight;
-            data.currents[eligibleCount] = nodeOperatorBalances[operatorId];
+            data.currents[eligibleCount] = currentStakeByOperatorId[operatorId];
             data.capacities[eligibleCount] = capacity;
             data.operatorIds[eligibleCount] = operatorId;
             ++eligibleCount;
@@ -325,15 +335,16 @@ library CuratedDepositAllocator {
             uint256 weightSum,
             uint256 totalCurrent,
             uint256[] memory weightsByOperatorId,
-            uint256[] memory capacitiesByOperatorId
+            uint256[] memory capacitiesByOperatorId,
+            uint256[] memory currentStakeByOperatorId
         )
     {
         weightsByOperatorId = new uint256[](operatorsCount);
         capacitiesByOperatorId = new uint256[](operatorsCount);
+        currentStakeByOperatorId = new uint256[](operatorsCount);
 
-        IParametersRegistry parametersRegistry = IBaseModule(address(this))
-            .PARAMETERS_REGISTRY();
-        IAccounting accounting = IBaseModule(address(this)).ACCOUNTING();
+        IMetaRegistry metaRegistry = ICuratedModule(address(this))
+            .META_REGISTRY();
 
         // Build global share baseline across all eligible operators (non-zero weight + capacity).
         for (uint256 i; i < operatorsCount; ++i) {
@@ -341,13 +352,16 @@ library CuratedDepositAllocator {
             uint256 capacity = _topUpCapacity(nodeOperators[i], balance);
             if (capacity == 0) continue;
             capacitiesByOperatorId[i] = capacity;
-            uint256 weight = parametersRegistry.getDepositAllocationWeight(
-                accounting.getBondCurveId(i)
-            );
+
+            (uint256 weight, uint256 externalStake) = metaRegistry
+                .getNodeOperatorWeightAndExternalStake(i);
             if (weight == 0) continue;
             weightsByOperatorId[i] = weight;
             weightSum += weight;
-            totalCurrent += balance;
+
+            uint256 currentStake = balance + externalStake;
+            currentStakeByOperatorId[i] = currentStake;
+            totalCurrent += currentStake;
         }
     }
 
