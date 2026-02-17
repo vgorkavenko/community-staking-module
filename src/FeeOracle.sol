@@ -8,8 +8,8 @@ import { AssetRecoverer } from "./abstract/AssetRecoverer.sol";
 import { PausableWithRoles } from "./abstract/PausableWithRoles.sol";
 import { BaseOracle } from "./lib/base-oracle/BaseOracle.sol";
 
-import { IFeeDistributor } from "./interfaces/IFeeDistributor.sol";
 import { IValidatorStrikes } from "./interfaces/IValidatorStrikes.sol";
+import { IFeeDistributor } from "./interfaces/IFeeDistributor.sol";
 import { IFeeOracle } from "./interfaces/IFeeOracle.sol";
 
 contract FeeOracle is IFeeOracle, BaseOracle, PausableWithRoles, AssetRecoverer {
@@ -20,18 +20,11 @@ contract FeeOracle is IFeeOracle, BaseOracle, PausableWithRoles, AssetRecoverer 
     /// @notice An ACL role granting the permission to submit the data for a committee report.
     bytes32 public constant SUBMIT_DATA_ROLE = keccak256("SUBMIT_DATA_ROLE");
 
-    /// @notice An ACL role granting the permission to recover assets
-    bytes32 public constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
-
     IFeeDistributor public immutable FEE_DISTRIBUTOR;
     IValidatorStrikes public immutable STRIKES;
 
-    /// @dev DEPRECATED
-    /// @custom:oz-renamed-from feeDistributor
-    IFeeDistributor internal _feeDistributor;
-    /// @dev DEPRECATED
-    /// @custom:oz-renamed-from avgPerfLeewayBP
-    uint256 internal _avgPerfLeewayBP;
+    bytes32 internal __freeSlot1;
+    bytes32 internal __freeSlot2;
 
     constructor(
         address feeDistributor,
@@ -56,8 +49,9 @@ contract FeeOracle is IFeeOracle, BaseOracle, PausableWithRoles, AssetRecoverer 
 
         BaseOracle._initialize(consensusContract, consensusVersion, 0);
 
-        _updateContractVersion(2);
-        _updateContractVersion(INITIALIZED_VERSION);
+        for (uint256 version = 2; version <= INITIALIZED_VERSION; version++) {
+            _updateContractVersion(version);
+        }
     }
 
     /// @dev This method is expected to be called only when the contract is upgraded from version 2 to version 3 for the existing version 2 deployment.

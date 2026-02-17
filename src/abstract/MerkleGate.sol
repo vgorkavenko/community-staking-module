@@ -14,7 +14,6 @@ import { IMerkleGate } from "../interfaces/IMerkleGate.sol";
 /// @notice Shared Merkle-based gate logic for gated node-operator flows.
 abstract contract MerkleGate is IMerkleGate, AccessControlEnumerableUpgradeable, PausableWithRoles, AssetRecoverer {
     bytes32 public constant SET_TREE_ROLE = keccak256("SET_TREE_ROLE");
-    bytes32 public constant RECOVERER_ROLE = keccak256("RECOVERER_ROLE");
 
     /// @notice Id of the bond curve to be assigned for eligible members.
     uint256 public curveId;
