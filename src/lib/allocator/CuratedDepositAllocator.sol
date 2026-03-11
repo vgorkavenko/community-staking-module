@@ -257,6 +257,97 @@ library CuratedDepositAllocator {
         }
     }
 
+    /// @notice Returns current deposit allocation targets for all operators.
+    /// @dev Target = totalCurrent * operatorWeight / totalWeight (in validator count).
+    ///      Includes operators regardless of depositable capacity for informational purposes.
+    ///      Actual allocation recalculates shares only across operators with available capacity,
+    ///      so real per-operator amounts may differ from the targets shown here.
+    ///      Arrays are indexed by operator id; zero-weight operators have zero values.
+    /// @param nodeOperators Node operator storage mapping from the module.
+    /// @param operatorsCount Total operators count in the module.
+    /// @return currentValidators Current active validator count per operator.
+    /// @return targetValidators Target validator count per operator.
+    function getDepositAllocationTargets(
+        mapping(uint256 => NodeOperator) storage nodeOperators,
+        uint256 operatorsCount
+    ) external view returns (uint256[] memory currentValidators, uint256[] memory targetValidators) {
+        if (operatorsCount == 0) return (currentValidators, targetValidators);
+
+        currentValidators = new uint256[](operatorsCount);
+        targetValidators = new uint256[](operatorsCount);
+
+        IMetaRegistry metaRegistry = ICuratedModule(address(this)).META_REGISTRY();
+
+        uint256 weightSum;
+        uint256 totalCurrent;
+        for (uint256 i; i < operatorsCount; ++i) {
+            NodeOperator storage no = nodeOperators[i];
+            (uint256 weight, uint256 externalStake) = metaRegistry.getNodeOperatorWeightAndExternalStake(i);
+            if (weight == 0) continue;
+
+            unchecked {
+                uint256 current = no.totalDepositedKeys - no.totalWithdrawnKeys;
+                if (externalStake > 0) current += externalStake / WithdrawnValidatorLib.MAX_EFFECTIVE_BALANCE;
+
+                currentValidators[i] = current;
+                // Temporarily store raw weight in targetValidators; will be converted below.
+                targetValidators[i] = weight;
+                weightSum += weight;
+                totalCurrent += current;
+            }
+        }
+
+        if (weightSum == 0) return (currentValidators, targetValidators);
+
+        for (uint256 i; i < operatorsCount; ++i) {
+            if (targetValidators[i] == 0) continue;
+            targetValidators[i] = Math.mulDiv(totalCurrent, targetValidators[i], weightSum);
+        }
+    }
+
+    /// @notice Returns current top-up allocation targets for all operators.
+    /// @dev Target = totalCurrent * operatorWeight / totalWeight (in wei).
+    ///      Includes operators regardless of top-up capacity for informational purposes.
+    ///      Actual allocation recalculates shares only across operators with available capacity,
+    ///      so real per-operator amounts may differ from the targets shown here.
+    ///      Arrays are indexed by operator id; zero-weight operators have zero values.
+    /// @param nodeOperatorBalances Per-operator balance (in wei) storage mapping from the module.
+    /// @param operatorsCount Total operators count in the module.
+    /// @return currentAllocations Current operator stake in wei.
+    /// @return targetAllocations Target operator stake in wei.
+    function getTopUpAllocationTargets(
+        mapping(uint256 => uint256) storage nodeOperatorBalances,
+        uint256 operatorsCount
+    ) external view returns (uint256[] memory currentAllocations, uint256[] memory targetAllocations) {
+        if (operatorsCount == 0) return (currentAllocations, targetAllocations);
+
+        currentAllocations = new uint256[](operatorsCount);
+        targetAllocations = new uint256[](operatorsCount);
+
+        IMetaRegistry metaRegistry = ICuratedModule(address(this)).META_REGISTRY();
+
+        uint256 weightSum;
+        uint256 totalCurrent;
+        for (uint256 i; i < operatorsCount; ++i) {
+            (uint256 weight, uint256 externalStake) = metaRegistry.getNodeOperatorWeightAndExternalStake(i);
+            if (weight == 0) continue;
+
+            uint256 currentStake = nodeOperatorBalances[i] + externalStake;
+            currentAllocations[i] = currentStake;
+            // Temporarily store raw weight in targetAllocations; will be converted below.
+            targetAllocations[i] = weight;
+            weightSum += weight;
+            totalCurrent += currentStake;
+        }
+
+        if (weightSum == 0) return (currentAllocations, targetAllocations);
+
+        for (uint256 i; i < operatorsCount; ++i) {
+            if (targetAllocations[i] == 0) continue;
+            targetAllocations[i] = Math.mulDiv(totalCurrent, targetAllocations[i], weightSum);
+        }
+    }
+
     /// @dev Quantizes a value down to the nearest multiple of TOP_UP_STEP.
     function quantizeForTopUp(uint256 value) internal pure returns (uint256) {
         return DepositAllocatorGreedy._quantize(value, TOP_UP_STEP);
@@ -271,22 +362,9 @@ library CuratedDepositAllocator {
     ) internal pure returns (uint256 allocated, uint256[] memory allocations) {
         // allocationAmount > 0, n > 0, and step > 0 are guaranteed by the callers.
 
-        AllocationState memory state = operatorsData.alloc;
+        _normalizeWeightsToShares(operatorsData);
 
-        for (uint256 i; i < state.sharesX96.length; ++i) {
-            // NOTE: no zero-check here. Collectors filter out zero weights and truncate
-            //       arrays to eligible node operators count, so sharesX96 entries are non-zero.
-
-            // Convert raw weights to X96 shares in-place (reuses the same array).
-            state.sharesX96[i] = Math.mulDiv(
-                state.sharesX96[i],
-                DepositAllocatorGreedy.S_SCALE,
-                // weightSum > 0 is guaranteed by the collectors for any non-empty input.
-                operatorsData.weightSum
-            );
-        }
-
-        (allocated, allocations) = DepositAllocatorGreedy._allocate(state, allocationAmount, step);
+        (allocated, allocations) = DepositAllocatorGreedy._allocate(operatorsData.alloc, allocationAmount, step);
     }
 
     function _compactAllocations(
@@ -309,6 +387,21 @@ library CuratedDepositAllocator {
                 mstore(compactIds, compactIndex)
                 mstore(allocations, compactIndex)
             }
+        }
+    }
+
+    /// @dev Converts raw weights in alloc.sharesX96 to X96-scaled shares in-place.
+    function _normalizeWeightsToShares(DepositableOperatorsData memory data) internal pure {
+        uint256[] memory sharesX96 = data.alloc.sharesX96;
+        for (uint256 i; i < sharesX96.length; ++i) {
+            // NOTE: no zero-check here. Collectors filter out zero weights and truncate
+            //       arrays to eligible node operators count, so sharesX96 entries are non-zero.
+            sharesX96[i] = Math.mulDiv(
+                sharesX96[i],
+                DepositAllocatorGreedy.S_SCALE,
+                // weightSum > 0 is guaranteed by the collectors for any non-empty input.
+                data.weightSum
+            );
         }
     }
 

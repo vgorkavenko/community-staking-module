@@ -210,6 +210,31 @@ contract CuratedModule is ICuratedModule, BaseModule {
     }
 
     /// @inheritdoc ICuratedModule
+    function getDepositAllocationTargets()
+        external
+        view
+        returns (uint256[] memory currentValidators, uint256[] memory targetValidators)
+    {
+        _requireDepositInfoUpToDate();
+        BaseModuleStorage storage $ = _baseStorage();
+        return CuratedDepositAllocator.getDepositAllocationTargets($.nodeOperators, $.nodeOperatorsCount);
+    }
+
+    /// @inheritdoc ICuratedModule
+    function getTopUpAllocationTargets()
+        external
+        view
+        returns (uint256[] memory currentAllocations, uint256[] memory targetAllocations)
+    {
+        _requireDepositInfoUpToDate();
+        return
+            CuratedDepositAllocator.getTopUpAllocationTargets(
+                _curatedStorage().operatorBalances,
+                _baseStorage().nodeOperatorsCount
+            );
+    }
+
+    /// @inheritdoc ICuratedModule
     function getDepositsAllocation(
         uint256 maxDepositAmount
     ) external view returns (uint256 allocated, uint256[] memory operatorIds, uint256[] memory allocations) {
